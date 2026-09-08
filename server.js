@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { getRouter } = require('stremio-addon-sdk');
@@ -24,7 +26,7 @@ const activeDownloads = new Map();
 let globalDownloadQueue = Promise.resolve();
 
 const RL_API_KEY = 'API-BAZARR-YTZ-SL';
-const ADMIN_KEY  = process.env.ADMIN_KEY || 'schimba-cheia-asta';
+const ADMIN_KEY  = process.env.ADMIN_KEY || 'rosubs-admin-2026';
 
 app.use(getRouter(addonInterface));
 
@@ -38,8 +40,8 @@ app.get('/admin/clear-cache', (req, res) => {
 });
 
 app.get(['/download', '/download.vtt'], async (req, res) => {
-    const zipUrl  = req.query.url;
-    const source  = req.query.source || 'regielive'; // NOU: stim de unde vine fisierul
+    const zipUrl = req.query.url;
+    const source = req.query.source || 'regielive';
     const sessionCookie = req.query.cookie || '';
 
     if (!zipUrl) return res.status(400).send('URL lipsa');
@@ -65,16 +67,17 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     const downloadTask = async () => {
         console.log(`\n[DESCARCARE][${source}] ${zipUrl}`);
 
-        // Headere diferite per sursa — RegieLive are nevoie de RL-API + Cookie,
-        // celelalte surse nu il accepta si pot da eroare daca il primesc
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Accept': 'application/octet-stream, */*',
         };
+
         if (source === 'regielive') {
-            headers['RL-API']   = RL_API_KEY;
-            headers['Cookie']   = sessionCookie;
-            headers['Referer']  = 'https://subtitrari.regielive.ro';
+            headers['RL-API']  = RL_API_KEY;
+            headers['Cookie']  = sessionCookie;
+            headers['Referer'] = 'https://subtitrari.regielive.ro';
+        } else if (source === 'subsro') {
+            headers['X-API-Key'] = process.env.SUBSRO_API_KEY || '';
         }
 
         const response = await axios({
@@ -89,8 +92,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             zip = new AdmZip(response.data);
         } catch (e) {
             const contentType = response.headers['content-type'] || 'necunoscut';
-            const fullBody    = Buffer.from(response.data).toString('utf8');
-            const titleMatch  = fullBody.match(/<title>([\s\S]*?)<\/title>/i);
+            const fullBody = Buffer.from(response.data).toString('utf8');
+            const titleMatch = fullBody.match(/<title>([\s\S]*?)<\/title>/i);
             console.error(`[X][${source}] Fisierul nu e ZIP!`);
             console.error(`    Status: ${response.status} | Content-Type: ${contentType}`);
             console.error(`    <title>: ${titleMatch ? titleMatch[1].trim() : '(fara title)'}`);
