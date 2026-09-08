@@ -27,6 +27,7 @@ let globalDownloadQueue = Promise.resolve();
 
 const RL_API_KEY = 'API-BAZARR-YTZ-SL';
 const ADMIN_KEY  = process.env.ADMIN_KEY || 'rosubs-admin-2026';
+const TITRARI_COOKIE = process.env.TITRARI_COOKIE || '';
 
 app.use(getRouter(addonInterface));
 
@@ -76,6 +77,11 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             headers['RL-API']  = RL_API_KEY;
             headers['Cookie']  = sessionCookie;
             headers['Referer'] = 'https://subtitrari.regielive.ro';
+        } else if (source === 'titrari') {
+            // Titrari.ro necesita cookie de sesiune pentru download
+            headers['Cookie']  = `PHPSESSID=${TITRARI_COOKIE}`;
+            headers['Referer'] = 'https://www.titrari.ro';
+            headers['Host']    = 'www.titrari.ro';
         } else if (source === 'subsro') {
             headers['X-API-Key'] = process.env.SUBSRO_API_KEY || '';
         }
@@ -84,7 +90,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             method: 'get',
             url: zipUrl,
             responseType: 'arraybuffer',
-            headers
+            headers,
+            maxRedirects: 5
         });
 
         let zip;
