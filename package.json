@@ -9,23 +9,12 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [
-    "stremio",
-    "stremio-addon",
-    "subtitles",
-    "romanian",
-    "regielive",
-    "titrari",
-    "subtitrari-noi",
-    "subs"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "adm-zip": "^0.5.18",
     "axios": "^1.9.0",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
     "express": "^4.18.2",
     "fuzzball": "^2.2.3",
     "iconv-lite": "^0.7.0",
