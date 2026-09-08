@@ -1,10 +1,12 @@
+require('dotenv').config();
+
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
 const { calculateScore } = require('./lib/scorer');
-const { searchRegieLive, clearSearchCache: clearRL } = require('./lib/regielive');
-const { searchTitrari, clearTitrariCache } = require('./lib/titrari');
-const { searchSubtitrariNoi, clearSubtitrariNoiCache } = require('./lib/subtitrarinoi');
-const { searchSubsRo, clearSubsRoCache } = require('./lib/subsro');
+const { searchRegieLive } = require('./lib/regielive');
+const { searchTitrari } = require('./lib/titrari');
+const { searchSubtitrariNoi } = require('./lib/subtitrarinoi');
+const { searchSubsRo } = require('./lib/subsro');
 
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
@@ -32,7 +34,6 @@ builder.defineSubtitlesHandler(async function(args) {
         return meta;
     };
 
-    // Toate 4 sursele in paralel
     const [rlResult, titrariResult, subnoiResult, subsroResult] = await Promise.allSettled([
         searchRegieLive(args.id, args.type, videoFilename),
         (async () => { const m = await getMetaOnce(); return searchTitrari(args.id, args.type, m); })(),
@@ -50,8 +51,13 @@ builder.defineSubtitlesHandler(async function(args) {
     ];
 
     for (const { result, name } of sources) {
-        if (result.status === 'fulfilled' && result.value) {
+        if (result.status === 'fulfilled' && Array.isArray(result.value)) {
             for (const sub of result.value) {
+                // FILTRU: sarim peste subtitrari fara URL valid
+                if (!sub.url || typeof sub.url !== 'string' || sub.url.trim() === '') {
+                    console.log(`[FILTRU] Sar peste subtitrare fara URL: "${sub.title}" din ${name}`);
+                    continue;
+                }
                 allSubs.push({ ...sub, _source: name });
             }
         } else if (result.status === 'rejected') {
@@ -79,7 +85,6 @@ builder.defineSubtitlesHandler(async function(args) {
         } else if (sub._source === 'titrari' || sub._source === 'subtitrarinoi') {
             signal = { type: 'downloads', value: sub.downloads || 0 };
         } else if (sub._source === 'subsro') {
-            // Dupa primul run empiric, vom sti exact ce camp folosim
             if (sub.rating !== null && sub.rating !== undefined) {
                 signal = { type: 'rating', value: sub.rating };
             } else if (sub.downloads) {
@@ -87,9 +92,16 @@ builder.defineSubtitlesHandler(async function(args) {
             }
         }
 
-        const downloadUrl = sub.url.startsWith('http')
-            ? sub.url
-            : `https://subtitrari.regielive.ro${sub.url}`;
+        // Construim URL-ul de download
+        let downloadUrl;
+        if (sub._source === 'titrari') {
+            // Titrari.ro: URL-ul e deja complet (https://www.titrari.ro/get.php?id=...)
+            downloadUrl = sub.url;
+        } else if (sub.url.startsWith('http')) {
+            downloadUrl = sub.url;
+        } else {
+            downloadUrl = `https://subtitrari.regielive.ro${sub.url}`;
+        }
 
         const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal);
 
