@@ -11,7 +11,7 @@ const { searchSubsRo } = require('./lib/subsro');
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
 const SOURCE_FAMILIES = {
-    disc: ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd'],
+    disc: ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'hddvd', 'bd', 'uhd'],
     web:  ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'],
     tv:   ['hdtv', 'pdtv', 'tvrip'],
     dvd:  ['dvdrip', 'dvdscr', 'r5'],
