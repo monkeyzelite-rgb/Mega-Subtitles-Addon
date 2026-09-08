@@ -4,7 +4,7 @@ const { calculateScore } = require('./lib/scorer');
 const { searchRegieLive, clearSearchCache: clearRL } = require('./lib/regielive');
 const { searchTitrari, clearTitrariCache } = require('./lib/titrari');
 const { searchSubtitrariNoi, clearSubtitrariNoiCache } = require('./lib/subtitrarinoi');
-// const { searchSubsRo } = require('./lib/subsro');
+const { searchSubsRo, clearSubsRoCache } = require('./lib/subsro');
 
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
@@ -32,44 +32,31 @@ builder.defineSubtitlesHandler(async function(args) {
         return meta;
     };
 
-    // Toate 3 sursele in paralel
-    const [rlResult, titrariResult, subnoiResult /*, subsroResult */] = await Promise.allSettled([
+    // Toate 4 sursele in paralel
+    const [rlResult, titrariResult, subnoiResult, subsroResult] = await Promise.allSettled([
         searchRegieLive(args.id, args.type, videoFilename),
-        (async () => {
-            const m = await getMetaOnce();
-            return searchTitrari(args.id, args.type, m);
-        })(),
-        (async () => {
-            const m = await getMetaOnce();
-            return searchSubtitrariNoi(args.id, args.type, m);
-        })(),
-        // searchSubsRo(args.id, args.type),
+        (async () => { const m = await getMetaOnce(); return searchTitrari(args.id, args.type, m); })(),
+        (async () => { const m = await getMetaOnce(); return searchSubtitrariNoi(args.id, args.type, m); })(),
+        (async () => { const m = await getMetaOnce(); return searchSubsRo(args.id, args.type, m); })(),
     ]);
 
     const allSubs = [];
 
-    if (rlResult.status === 'fulfilled' && rlResult.value) {
-        for (const sub of rlResult.value) {
-            allSubs.push({ ...sub, _source: 'regielive' });
-        }
-    } else if (rlResult.status === 'rejected') {
-        console.error('[AGREGATOR] RegieLive a picat:', rlResult.reason?.message);
-    }
+    const sources = [
+        { result: rlResult,      name: 'regielive' },
+        { result: titrariResult, name: 'titrari' },
+        { result: subnoiResult,  name: 'subtitrarinoi' },
+        { result: subsroResult,  name: 'subsro' },
+    ];
 
-    if (titrariResult.status === 'fulfilled' && titrariResult.value) {
-        for (const sub of titrariResult.value) {
-            allSubs.push({ ...sub, _source: 'titrari' });
+    for (const { result, name } of sources) {
+        if (result.status === 'fulfilled' && result.value) {
+            for (const sub of result.value) {
+                allSubs.push({ ...sub, _source: name });
+            }
+        } else if (result.status === 'rejected') {
+            console.error(`[AGREGATOR] ${name} a picat:`, result.reason?.message);
         }
-    } else if (titrariResult.status === 'rejected') {
-        console.error('[AGREGATOR] Titrari a picat:', titrariResult.reason?.message);
-    }
-
-    if (subnoiResult.status === 'fulfilled' && subnoiResult.value) {
-        for (const sub of subnoiResult.value) {
-            allSubs.push({ ...sub, _source: 'subtitrarinoi' });
-        }
-    } else if (subnoiResult.status === 'rejected') {
-        console.error('[AGREGATOR] Subtitrari-noi a picat:', subnoiResult.reason?.message);
     }
 
     if (allSubs.length === 0) return { subtitles: [] };
@@ -83,7 +70,7 @@ builder.defineSubtitlesHandler(async function(args) {
     });
 
     // Scoring unificat
-    let scored = dedupedSubs.map(sub => {
+    const scored = dedupedSubs.map(sub => {
         let signal = { type: 'none', value: 0 };
 
         if (sub._source === 'regielive') {
@@ -91,6 +78,13 @@ builder.defineSubtitlesHandler(async function(args) {
             signal = isNaN(r) ? { type: 'none', value: 0 } : { type: 'rating', value: r };
         } else if (sub._source === 'titrari' || sub._source === 'subtitrarinoi') {
             signal = { type: 'downloads', value: sub.downloads || 0 };
+        } else if (sub._source === 'subsro') {
+            // Dupa primul run empiric, vom sti exact ce camp folosim
+            if (sub.rating !== null && sub.rating !== undefined) {
+                signal = { type: 'rating', value: sub.rating };
+            } else if (sub.downloads) {
+                signal = { type: 'downloads', value: sub.downloads };
+            }
         }
 
         const downloadUrl = sub.url.startsWith('http')
