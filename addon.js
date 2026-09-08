@@ -10,6 +10,25 @@ const { searchSubsRo } = require('./lib/subsro');
 
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
+// Familiile de surse pentru filtrare
+const SOURCE_FAMILIES = {
+    disc: ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd'],
+    web:  ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'],
+    tv:   ['hdtv', 'pdtv', 'tvrip'],
+    dvd:  ['dvdrip', 'dvdscr', 'r5'],
+    cam:  ['cam', 'ts', 'hdcam', 'telecine', 'telesync']
+};
+
+function detectFamily(text) {
+    const t = text.toLowerCase();
+    for (const [family, keywords] of Object.entries(SOURCE_FAMILIES)) {
+        for (const kw of keywords) {
+            if (t.includes(kw)) return family;
+        }
+    }
+    return null;
+}
+
 async function getCinemetaInfo(imdbId, type) {
     const axios = require('axios');
     try {
@@ -28,6 +47,12 @@ builder.defineSubtitlesHandler(async function(args) {
     const videoFilename = (args.extra && args.extra.filename) ? args.extra.filename : '';
     const videoFilenameLower = videoFilename.toLowerCase();
 
+    // Detectam familia sursei filmului redat
+    const videoFamily = detectFamily(videoFilenameLower);
+    if (videoFamily) {
+        console.log(`[FILTRU] Familia detectata din filename: ${videoFamily}`);
+    }
+
     let meta = null;
     const getMetaOnce = async () => {
         if (!meta) meta = await getCinemetaInfo(args.id, args.type);
@@ -42,7 +67,6 @@ builder.defineSubtitlesHandler(async function(args) {
     ]);
 
     const allSubs = [];
-
     const sources = [
         { result: rlResult,      name: 'regielive' },
         { result: titrariResult, name: 'titrari' },
@@ -53,9 +77,12 @@ builder.defineSubtitlesHandler(async function(args) {
     for (const { result, name } of sources) {
         if (result.status === 'fulfilled' && Array.isArray(result.value)) {
             for (const sub of result.value) {
-                // FILTRU: sarim peste subtitrari fara URL valid
+                // Filtru 1: URL valid
                 if (!sub.url || typeof sub.url !== 'string' || sub.url.trim() === '') {
-                    console.log(`[FILTRU] Sar peste subtitrare fara URL: "${sub.title}" din ${name}`);
+                    continue;
+                }
+                // Filtru 2: URL RegieLive cu id 0
+                if (name === 'regielive' && sub.url.endsWith('-0.zip')) {
                     continue;
                 }
                 allSubs.push({ ...sub, _source: name });
@@ -92,10 +119,8 @@ builder.defineSubtitlesHandler(async function(args) {
             }
         }
 
-        // Construim URL-ul de download
         let downloadUrl;
         if (sub._source === 'titrari') {
-            // Titrari.ro: URL-ul e deja complet (https://www.titrari.ro/get.php?id=...)
             downloadUrl = sub.url;
         } else if (sub.url.startsWith('http')) {
             downloadUrl = sub.url;
@@ -112,14 +137,32 @@ builder.defineSubtitlesHandler(async function(args) {
             title: `[${sub._source.toUpperCase()}] ${sub.title || sub._source}`,
             score,
             breakdown,
+            subFamily: detectFamily(sub.title),
             _source: sub._source
         };
     });
 
     scored.sort((a, b) => b.score - a.score);
 
+    // Filtrare pe tip sursa — daca filename-ul are o familie clara,
+    // aratam intai subtitrari din aceeasi familie, celelalte le pastram ca fallback
+    let filtered = scored;
+    if (videoFamily && videoFilenameLower) {
+        const sameFamily = scored.filter(s => s.subFamily === videoFamily || s.score >= 100);
+        const otherFamily = scored.filter(s => s.subFamily !== videoFamily && s.score < 100);
+
+        if (sameFamily.length >= 3) {
+            // Avem destule din familia potrivita — le aratam pe alea + primele 5 altele ca backup
+            filtered = [...sameFamily, ...otherFamily.slice(0, 5)];
+            console.log(`[FILTRU] ${sameFamily.length} din familia "${videoFamily}" + ${Math.min(otherFamily.length, 5)} backup`);
+        } else {
+            // Prea putine din familia potrivita — aratam tot
+            console.log(`[FILTRU] Prea putine din familia "${videoFamily}" (${sameFamily.length}), afisez tot`);
+        }
+    }
+
     console.log(`\n[SCOR] Clasament pentru "${videoFilename || '(fara filename)'}"`);
-    scored.forEach((sub, i) => {
+    filtered.forEach((sub, i) => {
         const b = sub.breakdown;
         const parts = [];
         if (b.matchedGroup) parts.push(b.matchedGroup);
@@ -131,10 +174,10 @@ builder.defineSubtitlesHandler(async function(args) {
         if (b.softMatch)    parts.push(b.softMatch);
         if (b.signal)       parts.push(b.signal);
         const marker = i === 0 ? '  <-- ALEASA AUTOMAT' : '';
-        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
+        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] [${sub.subFamily || '?'}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
     });
 
-    const subtitles = scored.map(sub => ({
+    const subtitles = filtered.map(sub => ({
         id: sub.id,
         url: sub.url,
         lang: sub.lang,
