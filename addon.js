@@ -10,21 +10,52 @@ const { searchSubsRo } = require('./lib/subsro');
 
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
+// IMPORTANT: ordinea conteaza — mai specific primul
+// 'web' e dupa 'web-dl' si 'webrip' ca sa nu prinda gresit
+// 'hdtv' e separat de 'web' — nu au nicio legatura
 const SOURCE_FAMILIES = {
     disc: ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'hddvd', 'bd', 'uhd'],
-    web:  ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'],
-    tv:   ['hdtv', 'pdtv', 'tvrip'],
+    web:  ['web-dl', 'webdl', 'webrip', 'amzn', 'nf', 'hmax', 'dsnp', 'web'],
+    tv:   ['hdtv', 'pdtv', 'tvrip', 'dsr'],
     dvd:  ['dvdrip', 'dvdscr', 'r5'],
-    cam:  ['cam', 'ts', 'hdcam', 'telecine', 'telesync']
+    cam:  ['cam', 'hdcam', 'telecine', 'telesync']
 };
 
+// Detectare mai stricta — folosim word boundary pentru termenii scurti
 function detectFamily(text) {
     const t = (text || '').toLowerCase();
-    for (const [family, keywords] of Object.entries(SOURCE_FAMILIES)) {
-        for (const kw of keywords) {
-            if (t.includes(kw)) return family;
-        }
-    }
+
+    // Verificam mai intai termenii lungi/specifici pentru fiecare familie
+    // disc
+    if (/\bremux\b/.test(t)) return 'disc';
+    if (/\bblu-?ray\b/.test(t)) return 'disc';
+    if (/\bbdrip\b/.test(t)) return 'disc';
+    if (/\bbrrip\b/.test(t)) return 'disc';
+    if (/\bhddvd\b/.test(t)) return 'disc';
+    if (/\buhd\b/.test(t)) return 'disc';
+
+    // tv — verificat INAINTE de web ca sa nu prinda hdtv ca web
+    if (/\bhdtv\b/.test(t)) return 'tv';
+    if (/\bpdtv\b/.test(t)) return 'tv';
+    if (/\btvrip\b/.test(t)) return 'tv';
+    if (/\bdsr\b/.test(t)) return 'tv';
+
+    // dvd
+    if (/\bdvdrip\b/.test(t)) return 'dvd';
+    if (/\bdvdscr\b/.test(t)) return 'dvd';
+
+    // cam
+    if (/\bhdcam\b/.test(t)) return 'cam';
+    if (/\btelecine\b/.test(t)) return 'cam';
+    if (/\btelesync\b/.test(t)) return 'cam';
+    if (/\bcam\b/.test(t)) return 'cam';
+
+    // web — ultimul, dupa tv
+    if (/\bweb-dl\b/.test(t) || /\bwebdl\b/.test(t)) return 'web';
+    if (/\bwebrip\b/.test(t)) return 'web';
+    if (/\bamzn\b/.test(t) || /\bnf\b/.test(t) || /\bhmax\b/.test(t) || /\bdsnp\b/.test(t)) return 'web';
+    if (/\bweb\b/.test(t)) return 'web';
+
     return null;
 }
 
@@ -59,15 +90,6 @@ async function getCinemetaInfo(imdbId, type) {
     }
 }
 
-function selectBest(subs, videoFamily, MAX_MATCH = 3, MAX_FALLBACK = 1) {
-    const matching = subs.filter(s => !videoFamily || s.subFamily === videoFamily || s.score >= 100);
-    const fallback = subs.filter(s => videoFamily && s.subFamily !== videoFamily && s.score < 100);
-    return [
-        ...matching.slice(0, MAX_MATCH),
-        ...fallback.slice(0, MAX_FALLBACK)
-    ];
-}
-
 const builder = new addonBuilder(manifest);
 
 builder.defineSubtitlesHandler(async function(args) {
@@ -76,7 +98,9 @@ builder.defineSubtitlesHandler(async function(args) {
     const videoFamily = detectFamily(videoFilenameLower);
 
     if (videoFamily) {
-        console.log(`[FILTRU] Familia detectata: ${videoFamily}`);
+        console.log(`[FILTRU] Familia detectata din filename: ${videoFamily}`);
+    } else {
+        console.log(`[FILTRU] Nicio familie detectata — afisez toate`);
     }
 
     let meta = null;
@@ -99,14 +123,14 @@ builder.defineSubtitlesHandler(async function(args) {
         { result: subsroResult,  name: 'subsro' },
     ];
 
-    const scoredPerSource = {};
+    // Scoram toate subtitrările din toate sursele
+    const allScored = [];
 
     for (const { result, name } of sources) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value)) {
             if (result.status === 'rejected') {
                 console.error(`[AGREGATOR] ${name} a picat:`, result.reason?.message);
             }
-            scoredPerSource[name] = [];
             continue;
         }
 
@@ -116,7 +140,7 @@ builder.defineSubtitlesHandler(async function(args) {
             return true;
         });
 
-        scoredPerSource[name] = subs.map(sub => {
+        for (const sub of subs) {
             let signal = { type: 'none', value: 0 };
 
             if (name === 'regielive') {
@@ -139,36 +163,71 @@ builder.defineSubtitlesHandler(async function(args) {
             }
 
             const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal);
+            const subFamily = detectFamily(sub.title);
             const cleanTitle = decodeHtml(sub.title || name);
 
-            return {
+            allScored.push({
                 id: `${name}-${sub.id}`,
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}`,
-                // lang afiseaza "Romana" + sursa ca linie secundara in Nuvio
-                lang: `ron`,
+                lang: 'ron',
                 title: `${sourceLabel(name)} | ${cleanTitle}`,
                 score,
                 breakdown,
-                subFamily: detectFamily(sub.title),
+                subFamily,
                 _source: name
-            };
-        }).sort((a, b) => b.score - a.score);
-    }
-
-    const finalList = [];
-    const seenUrls = new Set();
-
-    for (const name of ['regielive', 'titrari', 'subtitrarinoi', 'subsro']) {
-        const best = selectBest(scoredPerSource[name] || [], videoFamily);
-        console.log(`[SELECTIE] ${name}: ${best.length} subtitrari alese din ${(scoredPerSource[name] || []).length} totale`);
-
-        for (const sub of best) {
-            if (seenUrls.has(sub.url)) continue;
-            seenUrls.add(sub.url);
-            finalList.push(sub);
+            });
         }
     }
 
+    // Sortam global dupa scor
+    allScored.sort((a, b) => b.score - a.score);
+
+    // Deduplicare dupa URL
+    const seenUrls = new Set();
+    const deduped = allScored.filter(sub => {
+        if (seenUrls.has(sub.url)) return false;
+        seenUrls.add(sub.url);
+        return true;
+    });
+
+    // Selectie finala:
+    // - Top 8 din familia potrivita (sau toate daca nu avem familie)
+    // - + Top 3 din alte familii ca fallback
+    // - Garantam cel putin 1 din fiecare sursa care a returnat rezultate
+    let finalList = [];
+    const seenSources = new Set();
+
+    if (videoFamily) {
+        const matching = deduped.filter(s => s.subFamily === videoFamily || s.score >= 100);
+        const others = deduped.filter(s => s.subFamily !== videoFamily && s.score < 100);
+
+        // Top 8 din familia potrivita
+        finalList = [...matching.slice(0, 8)];
+
+        // Garantam cel putin 1 din fiecare sursa care a returnat ceva
+        for (const sub of matching) {
+            seenSources.add(sub._source);
+        }
+        for (const sub of others) {
+            if (!seenSources.has(sub._source)) {
+                finalList.push(sub);
+                seenSources.add(sub._source);
+            }
+        }
+
+        // + Top 3 fallback din alte familii
+        const fallback = others.filter(s => seenSources.has(s._source) || true).slice(0, 3);
+        for (const sub of fallback) {
+            if (!finalList.find(f => f.url === sub.url)) {
+                finalList.push(sub);
+            }
+        }
+    } else {
+        // Fara familie detectata — top 12 global
+        finalList = deduped.slice(0, 12);
+    }
+
+    // Sortam inca o data lista finala
     finalList.sort((a, b) => b.score - a.score);
 
     console.log(`\n[SCOR] Clasament final pentru "${videoFilename || '(fara filename)'}"`);
@@ -184,7 +243,7 @@ builder.defineSubtitlesHandler(async function(args) {
         if (b.softMatch)    parts.push(b.softMatch);
         if (b.signal)       parts.push(b.signal);
         const marker = i === 0 ? '  <-- ALEASA AUTOMAT' : '';
-        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
+        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] [${sub.subFamily || '?'}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
     });
 
     const subtitles = finalList.map(sub => ({
