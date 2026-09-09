@@ -40,18 +40,13 @@ app.get('/admin/clear-cache', (req, res) => {
     res.send(`Cache golit: ${downloadsCleared} subtitrari + ${searchesCleared} cautari.`);
 });
 
-// Detectam tipul arhivei dupa magic bytes
 function detectArchiveType(buffer) {
     if (buffer.length < 4) return 'unknown';
-    // ZIP: PK (50 4B)
     if (buffer[0] === 0x50 && buffer[1] === 0x4B) return 'zip';
-    // RAR4: Rar! (52 61 72 21)
     if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 && buffer[3] === 0x21) return 'rar';
-    // RAR5: Rar! (same magic)
     return 'unknown';
 }
 
-// Extrage SRT dintr-un buffer ZIP
 function extractFromZip(buffer) {
     const zip = new AdmZip(buffer);
     const zipEntries = zip.getEntries();
@@ -76,7 +71,6 @@ function extractFromZip(buffer) {
     return candidates[0].getData();
 }
 
-// Extrage SRT dintr-un buffer RAR
 async function extractFromRar(buffer) {
     try {
         const { createExtractorFromData } = require('node-unrar-js');
@@ -91,7 +85,6 @@ async function extractFromRar(buffer) {
 
         if (candidates.length === 0) throw new Error('NO_SRT_IN_RAR');
 
-        // Alegem cel mai mare fisier SRT
         candidates.sort((a, b) => (b.packSize || 0) - (a.packSize || 0));
         const target = candidates[0];
         console.log(`[RAR] Extrag: "${target.name}"`);
@@ -114,9 +107,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
 
     if (!zipUrl) return res.status(400).send('URL lipsa');
 
-    // Filtru URL invalid RegieLive — id 0 = subtitrare fara URL valid
     if (source === 'regielive' && zipUrl.includes('/descarca-') && zipUrl.endsWith('-0.zip')) {
-        console.log(`[FILTRU] URL invalid RegieLive (id 0), refuz: ${zipUrl}`);
+        console.log(`[FILTRU] URL invalid RegieLive (id 0), refuz.`);
         return res.status(404).send('Subtitrare indisponibila.');
     }
 
@@ -155,7 +147,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             headers['Referer'] = 'https://www.titrari.ro';
             headers['Host']    = 'www.titrari.ro';
         } else if (source === 'subsro') {
-            headers['X-API-Key'] = process.env.SUBSRO_API_KEY || '';
+            headers['X-Subs-Api-Key'] = process.env.SUBSRO_API_KEY || '';
         }
 
         const response = await axios({
@@ -177,24 +169,21 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         } else if (archiveType === 'rar') {
             rawData = await extractFromRar(buffer);
         } else {
-            // Poate fi SRT direct (nearhivat)
             const preview = buffer.slice(0, 50).toString('utf8');
             if (preview.includes('-->') || /^\d+\s*\n/.test(preview)) {
-                console.log(`[ARHIVA] Pare SRT direct, il folosesc ca atare.`);
+                console.log(`[ARHIVA] SRT direct, il folosesc ca atare.`);
                 rawData = buffer;
             } else {
-                const contentType = response.headers['content-type'] || '';
                 const bodyStr = buffer.toString('utf8');
                 const titleMatch = bodyStr.match(/<title>([\s\S]*?)<\/title>/i);
                 console.error(`[X][${source}] Format necunoscut!`);
-                console.error(`    Content-Type: ${contentType}`);
+                console.error(`    Content-Type: ${response.headers['content-type'] || ''}`);
                 console.error(`    <title>: ${titleMatch ? titleMatch[1].trim() : '(fara title)'}`);
                 console.error(`    Primele 200 chars: ${bodyStr.slice(0, 200)}`);
                 throw new Error('UNKNOWN_FORMAT');
             }
         }
 
-        // Detectam encoding si decodam
         const detected = jschardet.detect(rawData);
         let encoding = 'windows-1250';
         if (detected && detected.encoding) {
