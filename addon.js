@@ -129,7 +129,7 @@ builder.defineSubtitlesHandler(async function(args) {
                 id: `${name}-${sub.id}`,
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}`,
                 lang: 'ron',
-                title: `[${name.toUpperCase()}] ${sub.title || name}`,
+                title: `[${name.toUpperCase()}] ${(sub.title || name).replace(/&#039;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')}`,
                 score,
                 breakdown,
                 subFamily: detectFamily(sub.title),
