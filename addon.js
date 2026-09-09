@@ -144,9 +144,9 @@ builder.defineSubtitlesHandler(async function(args) {
             return {
                 id: `${name}-${sub.id}`,
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}`,
-                lang: 'ron',
-                // Titlul apare pe primul rand, sursa apare pe al doilea rand in Nuvio/Stremio
-                title: `${sourceLabel(name)}: ${cleanTitle}`,
+                // lang afiseaza "Romana" + sursa ca linie secundara in Nuvio
+                lang: `ron`,
+                title: `${sourceLabel(name)} | ${cleanTitle}`,
                 score,
                 breakdown,
                 subFamily: detectFamily(sub.title),
@@ -184,7 +184,7 @@ builder.defineSubtitlesHandler(async function(args) {
         if (b.softMatch)    parts.push(b.softMatch);
         if (b.signal)       parts.push(b.signal);
         const marker = i === 0 ? '  <-- ALEASA AUTOMAT' : '';
-        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] [${sub.subFamily || '?'}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
+        console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);
     });
 
     const subtitles = finalList.map(sub => ({
