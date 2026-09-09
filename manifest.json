@@ -2,7 +2,7 @@
   "id": "ro.stremio.rosubs",
   "version": "1.0.0",
   "name": "RO Subs",
-  "description": "Subtitrari romanesti automate - RegieLive, Titrari.ro, Subtitrari-noi.ro, Subs.ro",
+  "description": "Subtitrari romanesti - RegieLive, Titrari.ro, Subtitrari-noi.ro, Subs.ro",
   "logo": "https://i.imgur.com/your-logo.png",
   "resources": ["subtitles"],
   "types": ["movie", "series"],
