@@ -28,6 +28,25 @@ function detectFamily(text) {
     return null;
 }
 
+function sourceLabel(source) {
+    const labels = {
+        'regielive':     'RegieLive',
+        'titrari':       'Titrari.ro',
+        'subtitrarinoi': 'Subtitrari-noi.ro',
+        'subsro':        'Subs.ro'
+    };
+    return labels[source] || source;
+}
+
+function decodeHtml(text) {
+    return (text || '')
+        .replace(/&#039;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+}
+
 async function getCinemetaInfo(imdbId, type) {
     const axios = require('axios');
     try {
@@ -40,9 +59,6 @@ async function getCinemetaInfo(imdbId, type) {
     }
 }
 
-// Selecteaza crema de la o sursa:
-// - primele MAX_PER_SOURCE din familia potrivita
-// - primele MAX_FALLBACK din alte familii
 function selectBest(subs, videoFamily, MAX_MATCH = 3, MAX_FALLBACK = 1) {
     const matching = subs.filter(s => !videoFamily || s.subFamily === videoFamily || s.score >= 100);
     const fallback = subs.filter(s => videoFamily && s.subFamily !== videoFamily && s.score < 100);
@@ -83,7 +99,6 @@ builder.defineSubtitlesHandler(async function(args) {
         { result: subsroResult,  name: 'subsro' },
     ];
 
-    // Scoring per sursa separat
     const scoredPerSource = {};
 
     for (const { result, name } of sources) {
@@ -124,12 +139,14 @@ builder.defineSubtitlesHandler(async function(args) {
             }
 
             const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal);
+            const cleanTitle = decodeHtml(sub.title || name);
 
             return {
                 id: `${name}-${sub.id}`,
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}`,
                 lang: 'ron',
-                title: `[${name.toUpperCase()}] ${(sub.title || name).replace(/&#039;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')}`,
+                // Titlul apare pe primul rand, sursa apare pe al doilea rand in Nuvio/Stremio
+                title: `${sourceLabel(name)}: ${cleanTitle}`,
                 score,
                 breakdown,
                 subFamily: detectFamily(sub.title),
@@ -138,7 +155,6 @@ builder.defineSubtitlesHandler(async function(args) {
         }).sort((a, b) => b.score - a.score);
     }
 
-    // Selectam crema de la fiecare sursa
     const finalList = [];
     const seenUrls = new Set();
 
@@ -153,7 +169,6 @@ builder.defineSubtitlesHandler(async function(args) {
         }
     }
 
-    // Sortare finala globala
     finalList.sort((a, b) => b.score - a.score);
 
     console.log(`\n[SCOR] Clasament final pentru "${videoFilename || '(fara filename)'}"`);
