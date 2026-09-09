@@ -14,6 +14,17 @@ const app = express();
 app.use(cors());
 app.use(express.static('public'));
 
+function fixRomanianDiacritics(text) {
+    return text
+        .replace(/\u015F/g, '\u0219') // ş → ș
+        .replace(/\u015E/g, '\u0218') // Ş → Ș
+        .replace(/\u0163/g, '\u021B') // ţ → ț
+        .replace(/\u0162/g, '\u021A') // Ţ → Ț
+        .replace(/\u00E3/g, 'ă')
+        .replace(/\u00E2/g, 'â')
+        .replace(/\u00EE/g, 'î');
+}
+
 function srtToVtt(srtText) {
     let text = String(srtText).replace(/\r+/g, '').trim();
     text = text.replace(/^\d+\s*$/gm, '');
@@ -113,7 +124,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     }
 
     const sendSubtitleResponse = (text, responseObj) => {
-        const vttText = srtToVtt(text);
+        const fixedText = fixRomanianDiacritics(text);
+        const vttText = srtToVtt(fixedText);
         responseObj.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         responseObj.setHeader('Content-Disposition', 'inline; filename="subtitle.vtt"');
         responseObj.setHeader('Access-Control-Allow-Origin', '*');
