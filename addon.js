@@ -146,7 +146,7 @@ builder.defineSubtitlesHandler(async function(args) {
                 downloadUrl = `https://subtitrari.regielive.ro${sub.url}`;
             }
 
-            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal);
+            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily);
             const subFamily = detectFamily(sub.title);
             const cleanTitle = decodeHtml(sub.title || name);
 
