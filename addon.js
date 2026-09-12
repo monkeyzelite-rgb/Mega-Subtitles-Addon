@@ -10,23 +10,9 @@ const { searchSubsRo } = require('./lib/subsro');
 
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
-// IMPORTANT: ordinea conteaza — mai specific primul
-// 'web' e dupa 'web-dl' si 'webrip' ca sa nu prinda gresit
-// 'hdtv' e separat de 'web' — nu au nicio legatura
-const SOURCE_FAMILIES = {
-    disc: ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'hddvd', 'bd', 'uhd'],
-    web:  ['web-dl', 'webdl', 'webrip', 'amzn', 'nf', 'hmax', 'dsnp', 'web'],
-    tv:   ['hdtv', 'pdtv', 'tvrip', 'dsr'],
-    dvd:  ['dvdrip', 'dvdscr', 'r5'],
-    cam:  ['cam', 'hdcam', 'telecine', 'telesync']
-};
-
-// Detectare mai stricta — folosim word boundary pentru termenii scurti
 function detectFamily(text) {
     const t = (text || '').toLowerCase();
 
-    // Verificam mai intai termenii lungi/specifici pentru fiecare familie
-    // disc
     if (/\bremux\b/.test(t)) return 'disc';
     if (/\bblu-?ray\b/.test(t)) return 'disc';
     if (/\bbdrip\b/.test(t)) return 'disc';
@@ -34,23 +20,19 @@ function detectFamily(text) {
     if (/\bhddvd\b/.test(t)) return 'disc';
     if (/\buhd\b/.test(t)) return 'disc';
 
-    // tv — verificat INAINTE de web ca sa nu prinda hdtv ca web
     if (/\bhdtv\b/.test(t)) return 'tv';
     if (/\bpdtv\b/.test(t)) return 'tv';
     if (/\btvrip\b/.test(t)) return 'tv';
     if (/\bdsr\b/.test(t)) return 'tv';
 
-    // dvd
     if (/\bdvdrip\b/.test(t)) return 'dvd';
     if (/\bdvdscr\b/.test(t)) return 'dvd';
 
-    // cam
     if (/\bhdcam\b/.test(t)) return 'cam';
     if (/\btelecine\b/.test(t)) return 'cam';
     if (/\btelesync\b/.test(t)) return 'cam';
     if (/\bcam\b/.test(t)) return 'cam';
 
-    // web — ultimul, dupa tv
     if (/\bweb-dl\b/.test(t) || /\bwebdl\b/.test(t)) return 'web';
     if (/\bwebrip\b/.test(t)) return 'web';
     if (/\bamzn\b/.test(t) || /\bnf\b/.test(t) || /\bhmax\b/.test(t) || /\bdsnp\b/.test(t)) return 'web';
@@ -93,6 +75,9 @@ async function getCinemetaInfo(imdbId, type) {
 const builder = new addonBuilder(manifest);
 
 builder.defineSubtitlesHandler(async function(args) {
+    // DEBUG — vedem exact ce trimite Nuvio
+    console.log('[ARGS COMPLET]', JSON.stringify(args, null, 2));
+
     const videoFilename = (args.extra && args.extra.filename) ? args.extra.filename : '';
     const videoFilenameLower = videoFilename.toLowerCase();
     const videoFamily = detectFamily(videoFilenameLower);
@@ -100,7 +85,7 @@ builder.defineSubtitlesHandler(async function(args) {
     if (videoFamily) {
         console.log(`[FILTRU] Familia detectata din filename: ${videoFamily}`);
     } else {
-        console.log(`[FILTRU] Nicio familie detectata — afisez toate`);
+        console.log(`[FILTRU] Nicio familie detectata din filename: "${videoFilename}"`);
     }
 
     let meta = null;
@@ -123,7 +108,6 @@ builder.defineSubtitlesHandler(async function(args) {
         { result: subsroResult,  name: 'subsro' },
     ];
 
-    // Scoram toate subtitrările din toate sursele
     const allScored = [];
 
     for (const { result, name } of sources) {
@@ -179,10 +163,8 @@ builder.defineSubtitlesHandler(async function(args) {
         }
     }
 
-    // Sortam global dupa scor
     allScored.sort((a, b) => b.score - a.score);
 
-    // Deduplicare dupa URL
     const seenUrls = new Set();
     const deduped = allScored.filter(sub => {
         if (seenUrls.has(sub.url)) return false;
@@ -190,24 +172,16 @@ builder.defineSubtitlesHandler(async function(args) {
         return true;
     });
 
-    // Selectie finala:
-    // - Top 8 din familia potrivita (sau toate daca nu avem familie)
-    // - + Top 3 din alte familii ca fallback
-    // - Garantam cel putin 1 din fiecare sursa care a returnat rezultate
     let finalList = [];
-    const seenSources = new Set();
 
     if (videoFamily) {
         const matching = deduped.filter(s => s.subFamily === videoFamily || s.score >= 100);
         const others = deduped.filter(s => s.subFamily !== videoFamily && s.score < 100);
+        const seenSources = new Set();
 
-        // Top 8 din familia potrivita
         finalList = [...matching.slice(0, 8)];
+        for (const sub of matching) seenSources.add(sub._source);
 
-        // Garantam cel putin 1 din fiecare sursa care a returnat ceva
-        for (const sub of matching) {
-            seenSources.add(sub._source);
-        }
         for (const sub of others) {
             if (!seenSources.has(sub._source)) {
                 finalList.push(sub);
@@ -215,19 +189,28 @@ builder.defineSubtitlesHandler(async function(args) {
             }
         }
 
-        // + Top 3 fallback din alte familii
-        const fallback = others.filter(s => seenSources.has(s._source) || true).slice(0, 3);
+        const fallback = others.slice(0, 3);
         for (const sub of fallback) {
-            if (!finalList.find(f => f.url === sub.url)) {
-                finalList.push(sub);
-            }
+            if (!finalList.find(f => f.url === sub.url)) finalList.push(sub);
         }
     } else {
-        // Fara familie detectata — top 12 global
+        // Fara familie — sortam global dar dam bonus la web si disc fata de tv si cam
+        const QUALITY_BONUS = {
+            'disc': 15,
+            'web':  10,
+            'dvd':  5,
+            'tv':   0,
+            'cam':  0
+        };
+
+        deduped.forEach(sub => {
+            sub.score += QUALITY_BONUS[sub.subFamily] || 0;
+        });
+
+        deduped.sort((a, b) => b.score - a.score);
         finalList = deduped.slice(0, 12);
     }
 
-    // Sortam inca o data lista finala
     finalList.sort((a, b) => b.score - a.score);
 
     console.log(`\n[SCOR] Clasament final pentru "${videoFilename || '(fara filename)'}"`);
