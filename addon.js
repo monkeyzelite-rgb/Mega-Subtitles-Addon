@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
-const { calculateScore } = require('./lib/scorer');
+const { calculateScore, getSourceType } = require('./lib/scorer');
 const { searchRegieLive } = require('./lib/regielive');
 const { searchTitrari } = require('./lib/titrari');
 const { searchSubtitrariNoi } = require('./lib/subtitrarinoi');
@@ -11,7 +11,8 @@ const { searchSubsRo } = require('./lib/subsro');
 const APP_URL = process.env.APP_URL || 'http://localhost:7000';
 
 function detectFamily(text) {
-    const t = (text || '').toLowerCase();
+    return getSourceType(text);
+}
 
     if (/\bremux\b/.test(t)) return 'disc';
     if (/\bblu-?ray\b/.test(t)) return 'disc';
