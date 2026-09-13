@@ -90,7 +90,7 @@ builder.defineSubtitlesHandler(async function(args) {
         console.log(`[FILTRU] Nicio familie detectata`);
     }
     if (videoFps) {
-        console.log(`[FPS] Framerate detectat din filename: ${videoFps}`);
+        console.log(`[FPS] Framerate detectat: ${videoFps}`);
     }
 
     let meta = null;
@@ -157,7 +157,8 @@ builder.defineSubtitlesHandler(async function(args) {
 
             allScored.push({
                 id: `${name}-${sub.id}`,
-                url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}`,
+                // Trimitem si filename-ul (vf) ca server.js sa aleaga fisierul corect din arhiva
+                url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}`,
                 lang: 'ron',
                 title: `${sourceLabel(name)} | ${cleanTitle}`,
                 score,
