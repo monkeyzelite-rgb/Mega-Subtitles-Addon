@@ -9,6 +9,7 @@ const AdmZip = require('adm-zip');
 const iconv = require('iconv-lite');
 const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
+const cacheDb = require('./lib/cache');
 
 const app = express();
 app.use(cors());
@@ -32,7 +33,8 @@ function srtToVtt(srtText) {
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
 
-const subtitlesCache = new Map();
+// Cache in memorie — layer rapid peste SQLite
+const memCache = new Map();
 const activeDownloads = new Map();
 let globalDownloadQueue = Promise.resolve();
 
@@ -44,11 +46,21 @@ app.use(getRouter(addonInterface));
 
 app.get('/admin/clear-cache', (req, res) => {
     if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
-    const downloadsCleared = subtitlesCache.size;
-    subtitlesCache.clear();
+    const memCleared = memCache.size;
+    memCache.clear();
     activeDownloads.clear();
     const searchesCleared = clearSearchCache();
-    res.send(`Cache golit: ${downloadsCleared} subtitrari + ${searchesCleared} cautari.`);
+    const dbCleared = cacheDb.clearAll();
+    res.send(`Cache golit: ${memCleared} memorie + ${searchesCleared} cautari + ${dbCleared} intrari SQLite.`);
+});
+
+app.get('/admin/cache-stats', (req, res) => {
+    if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
+    const s = cacheDb.stats();
+    res.json({
+        memorie: memCache.size,
+        sqlite: s
+    });
 });
 
 function detectArchiveType(buffer) {
@@ -57,10 +69,6 @@ function detectArchiveType(buffer) {
     if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 && buffer[3] === 0x21) return 'rar';
     return 'unknown';
 }
-
-// === SELECTIE INTELIGENTA DIN ARHIVA ===
-// Cand arhiva contine mai multe subtitrari (ex. BluRay/, HDRip/, HD-TS/),
-// alegem pe cea care se potriveste cu fisierul video redat, nu pe cea mai mare.
 
 const DISC_KEYWORDS = ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd', 'hddvd'];
 const WEB_KEYWORDS  = ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'];
@@ -76,7 +84,6 @@ function getFileSourceType(text) {
     return null;
 }
 
-// Scoreaza un fisier din arhiva fata de filename-ul video
 function scoreArchiveEntry(entryName, videoFilename) {
     if (!videoFilename) return 0;
 
@@ -84,7 +91,6 @@ function scoreArchiveEntry(entryName, videoFilename) {
     const video = videoFilename.toLowerCase();
     let score = 0;
 
-    // 1. Sursa (cel mai important) — BluRay video trebuie sa ia sub din folder BluRay
     const videoSrc = getFileSourceType(video);
     const entrySrc = getFileSourceType(entry);
     if (videoSrc && entrySrc) {
@@ -98,24 +104,20 @@ function scoreArchiveEntry(entryName, videoFilename) {
         }
     }
 
-    // 2. Rezolutie
     for (const res of ['2160p', '1080p', '720p', '480p']) {
         if (video.includes(res) && entry.includes(res)) { score += 40; break; }
     }
 
-    // 3. Release group — ultimul token dupa cratima din filename video
     const groupMatch = video.match(/-([a-z0-9]{2,20})(?:\.[a-z0-9]{2,4})?$/i);
     if (groupMatch) {
         const group = groupMatch[1].toLowerCase();
         if (group.length >= 3 && entry.includes(group)) score += 80;
     }
 
-    // 4. Codec
     for (const codec of ['x265', 'hevc', 'x264', 'h264', 'av1']) {
         if (video.includes(codec) && entry.includes(codec)) { score += 20; break; }
     }
 
-    // 5. Sezon+Episod pentru seriale
     const seMatch = video.match(/s(\d{1,2})e(\d{1,2})/i);
     if (seMatch) {
         const se = `s${seMatch[1].padStart(2,'0')}e${seMatch[2].padStart(2,'0')}`;
@@ -125,7 +127,6 @@ function scoreArchiveEntry(entryName, videoFilename) {
     return score;
 }
 
-// Alege cel mai potrivit fisier de subtitrare dintr-o lista
 function pickBestSubtitleFile(candidates, videoFilename) {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return candidates[0];
@@ -136,7 +137,6 @@ function pickBestSubtitleFile(candidates, videoFilename) {
         size: c.size || 0
     }));
 
-    // Sortam: intai dupa potrivire, apoi dupa marime
     scored.sort((a, b) => {
         if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
         return b.size - a.size;
@@ -208,7 +208,6 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     const zipUrl = req.query.url;
     const source = req.query.source || 'regielive';
     const sessionCookie = req.query.cookie || '';
-    // Filename-ul video, trimis de addon.js ca sa alegem corect din arhiva
     const videoFilename = req.query.vf || '';
 
     if (!zipUrl) return res.status(400).send('URL lipsa');
@@ -218,8 +217,6 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         return res.status(404).send('Subtitrare indisponibila.');
     }
 
-    // Cheia de cache include si filename-ul — aceeasi arhiva poate da
-    // subtitrari diferite pentru fisiere video diferite
     const cacheKey = `${zipUrl}::${videoFilename}`;
 
     const sendSubtitleResponse = (text, responseObj) => {
@@ -231,7 +228,19 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         return responseObj.send(vttText);
     };
 
-    if (subtitlesCache.has(cacheKey)) return sendSubtitleResponse(subtitlesCache.get(cacheKey), res);
+    // 1. Cache in memorie (cel mai rapid)
+    if (memCache.has(cacheKey)) {
+        console.log(`[CACHE-MEM] Hit: ${videoFilename || zipUrl}`);
+        return sendSubtitleResponse(memCache.get(cacheKey), res);
+    }
+
+    // 2. Cache pe disc (SQLite) — supravietuieste repornirii
+    const fromDb = cacheDb.getSubtitle(cacheKey);
+    if (fromDb) {
+        console.log(`[CACHE-DB] Hit: ${videoFilename || zipUrl}`);
+        memCache.set(cacheKey, fromDb);
+        return sendSubtitleResponse(fromDb, res);
+    }
 
     if (activeDownloads.has(cacheKey)) {
         try {
@@ -322,7 +331,9 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
 
     try {
         const subtitleText = await queuedTask;
-        subtitlesCache.set(cacheKey, subtitleText);
+        // Salvam in ambele layere de cache
+        memCache.set(cacheKey, subtitleText);
+        cacheDb.setSubtitle(cacheKey, subtitleText);
         activeDownloads.delete(cacheKey);
         return sendSubtitleResponse(subtitleText, res);
     } catch (error) {
@@ -334,7 +345,14 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     }
 });
 
+// Curatam intrarile expirate o data pe zi
+setInterval(() => cacheDb.cleanup(), 24 * 60 * 60 * 1000);
+
 const port = process.env.PORT || 7000;
 app.listen(port, () => {
     console.log(`RO Subs addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
+    const s = cacheDb.stats();
+    if (s.available) {
+        console.log(`[CACHE-DB] ${s.searches} cautari, ${s.subtitles} subtitrari, ${s.sizeMB} MB`);
+    }
 });
