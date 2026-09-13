@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
-const { calculateScore, getSourceType } = require('./lib/scorer');
+const { calculateScore, getSourceType, detectFramerate } = require('./lib/scorer');
 const { searchRegieLive } = require('./lib/regielive');
 const { searchTitrari } = require('./lib/titrari');
 const { searchSubtitrariNoi } = require('./lib/subtitrarinoi');
@@ -14,7 +14,6 @@ function detectFamily(text) {
     return getSourceType(text);
 }
 
-// Detecteaza familia din dimensiunea fisierului ca fallback
 function detectFamilyFromSize(videoSizeBytes, contentType) {
     if (!videoSizeBytes) return null;
     const size = parseInt(videoSizeBytes);
@@ -24,13 +23,11 @@ function detectFamilyFromSize(videoSizeBytes, contentType) {
     const MB = 1024 * 1024;
 
     if (contentType === 'series') {
-        if (size > 8 * GB)   return 'disc';
         if (size > 3 * GB)   return 'disc';
         if (size > 800 * MB) return 'web';
         if (size > 200 * MB) return 'web';
         return null;
     } else {
-        if (size > 30 * GB)  return 'disc';
         if (size > 15 * GB)  return 'disc';
         if (size > 6 * GB)   return 'web';
         if (size > 2 * GB)   return 'web';
@@ -77,7 +74,6 @@ builder.defineSubtitlesHandler(async function(args) {
     const videoFilenameLower = videoFilename.toLowerCase();
     const videoSize = args.extra && args.extra.videoSize ? args.extra.videoSize : null;
 
-    // Detectam familia din filename — daca nu merge, incercam din videoSize
     let videoFamily = detectFamily(videoFilenameLower);
     let familySource = 'filename';
 
@@ -86,10 +82,15 @@ builder.defineSubtitlesHandler(async function(args) {
         familySource = `videoSize(${(parseInt(videoSize) / (1024 * 1024 * 1024)).toFixed(1)}GB)`;
     }
 
+    const videoFps = detectFramerate(videoFilenameLower);
+
     if (videoFamily) {
         console.log(`[FILTRU] Familia detectata din ${familySource}: ${videoFamily}`);
     } else {
         console.log(`[FILTRU] Nicio familie detectata`);
+    }
+    if (videoFps) {
+        console.log(`[FPS] Framerate detectat din filename: ${videoFps}`);
     }
 
     let meta = null;
@@ -150,7 +151,6 @@ builder.defineSubtitlesHandler(async function(args) {
                 downloadUrl = `https://subtitrari.regielive.ro${sub.url}`;
             }
 
-            // Pasam videoFamily ca override pentru scorer
             const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily);
             const subFamily = detectFamily(sub.title);
             const cleanTitle = decodeHtml(sub.title || name);
@@ -213,6 +213,7 @@ builder.defineSubtitlesHandler(async function(args) {
         const b = sub.breakdown;
         const parts = [];
         if (b.matchedGroup) parts.push(b.matchedGroup);
+        if (b.framerate)    parts.push(b.framerate);
         if (b.seEpisode)    parts.push(b.seEpisode);
         if (b.sourceMatch)  parts.push(b.sourceMatch);
         if (b.year)         parts.push(b.year);
