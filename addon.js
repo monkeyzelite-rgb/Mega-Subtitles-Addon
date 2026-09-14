@@ -172,6 +172,10 @@ builder.defineSubtitlesHandler(async function(args) {
             if (subFamily === 'low') continue;
 
             const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode);
+            // Titlul mentioneaza explicit un ALT sezon decat cel cerut — nu e risc de
+            // sincronizare, e continut garantat gresit. Eliminam complet, nu doar
+            // penalizam (vezi lib/scorer.js unde se seteaza acest flag).
+            if (breakdown.wrongSeason) continue;
             const cleanTitle = decodeHtml(sub.title || name);
 
             const seParam = (knownSeason && knownEpisode) ? `&season=${knownSeason}&episode=${knownEpisode}` : '';
