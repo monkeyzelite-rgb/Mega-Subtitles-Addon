@@ -87,6 +87,32 @@ const MAX_NESTED_DEPTH = 1;
 // continut real mult mai mare, clasicul "decompression bomb").
 const MAX_NESTED_ARCHIVE_SIZE = 20 * 1024 * 1024; // 20MB
 
+// Un .srt/.sub, oricat de incarcat cu mai multe limbi sau segmente, nu ar trebui
+// sa depaseasca asta. Aplicam limita si pe marimea DECLARATA (filtru rapid,
+// inainte de decomprimare) si pe cea REALA dupa decomprimare — un header
+// falsificat intr-o arhiva construita malitios poate declara o marime mica
+// si decomprima la ceva mult mai mare (decompression bomb).
+const MAX_SUBTITLE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+// /download accepta un URL controlat de client. Fara verificare, oricine poate
+// cere serverului sa descarce si sa parseze orice arhiva de pe orice domeniu
+// (risc SSRF + amplificare pt. decompression-bomb pe un domeniu strain). Legam
+// fiecare sursa suportata la domeniul ei real (verificat direct in cod, nu presupus).
+const ALLOWED_DOWNLOAD_DOMAINS = {
+    regielive:     ['regielive.ro'],
+    titrari:       ['titrari.ro'],
+    subtitrarinoi: ['subtitrari-noi.ro'],
+    subsro:        ['subs.ro'],
+};
+const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB — generos pt. orice arhiva reala de subtitrari
+
+function isAllowedDownloadHost(hostname, source) {
+    const allowedDomains = ALLOWED_DOWNLOAD_DOMAINS[source];
+    if (!allowedDomains) return false;
+    const h = (hostname || '').toLowerCase();
+    return allowedDomains.some(domain => h === domain || h.endsWith(`.${domain}`));
+}
+
 const DISC_KEYWORDS = ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd', 'hddvd'];
 const WEB_KEYWORDS  = ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'];
 const HDTV_KEYWORDS = ['hdtv', 'pdtv', 'tvrip'];
@@ -195,7 +221,8 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
             const fn = e.entryName.toLowerCase();
             const base = fn.split('/').pop();
             return !fn.includes('__macosx') && !base.startsWith('.') &&
-                   (fn.endsWith('.srt') || fn.endsWith('.sub'));
+                   (fn.endsWith('.srt') || fn.endsWith('.sub')) &&
+                   (e.header.size || 0) <= MAX_SUBTITLE_FILE_SIZE;
         })
         .map(e => ({ name: e.entryName, size: e.header.size || 0, _entry: e }));
 
@@ -229,7 +256,9 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
     }
 
     const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
-    return best._entry.getData();
+    const data = best._entry.getData();
+    if (data.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
+    return data;
 }
 
 async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
@@ -242,7 +271,8 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         const candidates = fileHeaders
             .filter(h => {
                 const fn = h.name.toLowerCase();
-                return fn.endsWith('.srt') || fn.endsWith('.sub');
+                return (fn.endsWith('.srt') || fn.endsWith('.sub')) &&
+                       (h.unpSize || h.packSize || 0) <= MAX_SUBTITLE_FILE_SIZE;
             })
             .map(h => ({ name: h.name, size: h.unpSize || h.packSize || 0 }));
 
@@ -289,7 +319,9 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         const files = [...extracted.files];
         if (files.length === 0) throw new Error('RAR_EXTRACT_FAILED');
 
-        return Buffer.from(files[0].extraction);
+        const finalBuffer = Buffer.from(files[0].extraction);
+        if (finalBuffer.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
+        return finalBuffer;
     } catch (err) {
         console.error('[RAR] Eroare extractie:', err.message);
         throw new Error('RAR_EXTRACT_FAILED');
@@ -305,6 +337,23 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     const knownEpisode = req.query.episode ? parseInt(req.query.episode, 10) : null;
 
     if (!zipUrl) return res.status(400).send('URL lipsa');
+
+    // Fara asta, orice client (nu doar Stremio) putea cere serverului sa
+    // descarce si parseze orice URL, de pe orice domeniu — risc SSRF + vector
+    // de amplificare pt. un atac de tip decompression-bomb pe un domeniu strain.
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(zipUrl);
+    } catch {
+        return res.status(400).send('URL invalid.');
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return res.status(400).send('Protocol nepermis.');
+    }
+    if (!isAllowedDownloadHost(parsedUrl.hostname, source)) {
+        console.error(`[SECURITATE] URL refuzat — domeniul "${parsedUrl.hostname}" nu e permis pentru sursa "${source}".`);
+        return res.status(403).send('Domeniu nepermis pentru aceasta sursa.');
+    }
 
     if (source === 'regielive' && zipUrl.includes('/descarca-') && zipUrl.endsWith('-0.zip')) {
         console.log(`[FILTRU] URL invalid RegieLive (id 0), refuz.`);
@@ -370,7 +419,16 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             url: zipUrl,
             responseType: 'arraybuffer',
             headers,
-            maxRedirects: 5
+            maxRedirects: 5,
+            maxContentLength: MAX_DOWNLOAD_SIZE,
+            maxBodyLength: MAX_DOWNLOAD_SIZE,
+            // Un redirect poate duce in afara domeniului validat mai sus — verificam
+            // si fiecare hop, nu doar URL-ul initial.
+            beforeRedirect: (options) => {
+                if (!isAllowedDownloadHost(options.hostname, source)) {
+                    throw new Error(`Redirect catre domeniu nepermis: ${options.hostname}`);
+                }
+            }
         });
 
         const buffer = Buffer.from(response.data);
