@@ -74,6 +74,19 @@ function detectArchiveType(buffer) {
     return 'unknown';
 }
 
+// Cate un nivel de recursie e suficient pentru cazul real intalnit (pachet
+// "serie completa" = un rar/zip exterior ce contine cate un rar/zip per sezon)
+// si opreste orice risc de bucla / arhiva-in-arhiva-in-arhiva construita
+// malitios. Limita de marime evita sa decomprimam ceva neasteptat de mare
+// doar pentru ca "pare" un pachet per-sezon legitim.
+const MAX_NESTED_DEPTH = 1;
+// Un pachet de subtitrari pt. un singur sezon nu ar trebui sa depaseasca asta.
+// Verificam marimea declarata in header INAINTE de decomprimare (filtru rapid)
+// SI marimea reala a bufferului dupa decomprimare (header-ul poate fi
+// falsificat intr-o arhiva construita malitios — marime mica declarata,
+// continut real mult mai mare, clasicul "decompression bomb").
+const MAX_NESTED_ARCHIVE_SIZE = 20 * 1024 * 1024; // 20MB
+
 const DISC_KEYWORDS = ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd', 'hddvd'];
 const WEB_KEYWORDS  = ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'];
 const HDTV_KEYWORDS = ['hdtv', 'pdtv', 'tvrip'];
@@ -137,6 +150,18 @@ function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) 
     return score;
 }
 
+// Un pachet "serie completa" e adesea o arhiva exterioara ce contine cate o
+// arhiva per sezon (ex: "Supernatural.S04.720p.BluRay.x264-Mixed Groups.rar").
+// Daca stim sigur sezonul cerut (din ID-ul Stremio) si EXACT una dintre
+// arhivele imbricate il mentioneaza, o putem identifica fara ambiguitate —
+// altfel (zero sau mai multe potriviri) nu ghicim.
+function findSeasonMatchedNestedArchive(nestedNames, knownSeason) {
+    const season = String(knownSeason);
+    const pattern = new RegExp(`\\bs0?${season}\\b|\\bseason[\\s._-]*0?${season}\\b|\\bsezonul[\\s._-]*0?${season}\\b`, 'i');
+    const matches = nestedNames.filter(name => pattern.test(name));
+    return matches.length === 1 ? matches[0] : null;
+}
+
 function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode) {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return candidates[0];
@@ -161,7 +186,7 @@ function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpiso
     return scored[0].entry;
 }
 
-function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode) {
+async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
     const zip = new AdmZip(buffer);
     const zipEntries = zip.getEntries();
 
@@ -180,6 +205,23 @@ function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode) {
 
         const nested = zipEntries.filter(e => /\.(rar|zip)$/i.test(e.entryName));
         if (nested.length > 0) {
+            const matchedName = (knownSeason && depth < MAX_NESTED_DEPTH)
+                ? findSeasonMatchedNestedArchive(nested.map(e => e.entryName), knownSeason)
+                : null;
+            const matched = matchedName ? nested.find(e => e.entryName === matchedName) : null;
+
+            if (matched && (matched.header.size || 0) <= MAX_NESTED_ARCHIVE_SIZE) {
+                console.log(`[ZIP] Arhiva contine ${nested.length} arhive imbricate — recurg in cea a sezonului cunoscut: "${matched.entryName}"`);
+                const nestedBuffer = matched.getData();
+                if (nestedBuffer.length <= MAX_NESTED_ARCHIVE_SIZE) {
+                    const nestedType = detectArchiveType(nestedBuffer);
+                    if (nestedType === 'zip') return await extractFromZip(nestedBuffer, videoFilename, knownSeason, knownEpisode, depth + 1);
+                    if (nestedType === 'rar') return await extractFromRar(nestedBuffer, videoFilename, knownSeason, knownEpisode, depth + 1);
+                } else {
+                    console.error(`[ZIP] Arhiva imbricata "${matched.entryName}" a decomprimat la ${nestedBuffer.length} bytes — peste limita reala, o ignor (header posibil falsificat).`);
+                }
+            }
+
             console.error(`[ZIP] Arhiva contine ${nested.length} arhive imbricate (probabil pachet multi-sezon), nu extragem recursiv: ${nested.map(e => e.entryName).join(', ')}`);
             throw new Error('NESTED_ARCHIVE_UNSUPPORTED');
         }
@@ -190,7 +232,7 @@ function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode) {
     return best._entry.getData();
 }
 
-async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode) {
+async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
     try {
         const { createExtractorFromData } = require('node-unrar-js');
         const extractor = await createExtractorFromData({ data: buffer });
@@ -206,11 +248,34 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode) 
 
         if (candidates.length === 0) {
             // Unele pachete "serie completa" sunt o arhiva ce contine alte arhive
-            // imbricate (cate un .rar per sezon) — nu recursam in ele, deci nu avem
-            // ce extrage. Logam explicit distinct de un NO_SRT_IN_RAR obisnuit, ca
+            // imbricate (cate un .rar per sezon). Daca stim sigur sezonul cerut si
+            // EXACT una dintre ele il mentioneaza, recursam o singura data in ea —
+            // altfel (sezon necunoscut sau ambiguu) logam explicit si renuntam, ca
             // sa fie clar dintr-o privire in loguri de ce a esuat descarcarea asta.
             const nested = fileHeaders.filter(h => /\.(rar|zip)$/i.test(h.name));
             if (nested.length > 0) {
+                const matchedName = (knownSeason && depth < MAX_NESTED_DEPTH)
+                    ? findSeasonMatchedNestedArchive(nested.map(h => h.name), knownSeason)
+                    : null;
+                const matchedHeader = matchedName ? nested.find(h => h.name === matchedName) : null;
+                const matchedSize = matchedHeader ? (matchedHeader.unpSize || matchedHeader.packSize || 0) : 0;
+
+                if (matchedHeader && matchedSize <= MAX_NESTED_ARCHIVE_SIZE) {
+                    console.log(`[RAR] Arhiva contine ${nested.length} arhive imbricate — recurg in cea a sezonului cunoscut: "${matchedHeader.name}"`);
+                    const nestedExtracted = extractor.extract({ files: [matchedHeader.name] });
+                    const nestedFiles = [...nestedExtracted.files];
+                    if (nestedFiles.length > 0 && nestedFiles[0].extraction) {
+                        const nestedBuffer = Buffer.from(nestedFiles[0].extraction);
+                        if (nestedBuffer.length <= MAX_NESTED_ARCHIVE_SIZE) {
+                            const nestedType = detectArchiveType(nestedBuffer);
+                            if (nestedType === 'zip') return await extractFromZip(nestedBuffer, videoFilename, knownSeason, knownEpisode, depth + 1);
+                            if (nestedType === 'rar') return await extractFromRar(nestedBuffer, videoFilename, knownSeason, knownEpisode, depth + 1);
+                        } else {
+                            console.error(`[RAR] Arhiva imbricata "${matchedHeader.name}" a decomprimat la ${nestedBuffer.length} bytes — peste limita reala, o ignor (header posibil falsificat).`);
+                        }
+                    }
+                }
+
                 console.error(`[RAR] Arhiva contine ${nested.length} arhive imbricate (probabil pachet multi-sezon), nu extragem recursiv: ${nested.map(h => h.name).join(', ')}`);
                 throw new Error('NESTED_ARCHIVE_UNSUPPORTED');
             }
@@ -315,7 +380,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         let rawData;
 
         if (archiveType === 'zip') {
-            rawData = extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
+            rawData = await extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
         } else if (archiveType === 'rar') {
             rawData = await extractFromRar(buffer, videoFilename, knownSeason, knownEpisode);
         } else {
