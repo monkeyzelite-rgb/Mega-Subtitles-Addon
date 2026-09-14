@@ -165,8 +165,13 @@ builder.defineSubtitlesHandler(async function(args) {
                 downloadUrl = `https://subtitrari.regielive.ro${sub.url}`;
             }
 
-            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode);
             const subFamily = detectFamily(sub.title);
+            // Sursele "low" (DVDRip/CAM/telesync etc.) sunt izgonite complet — userul
+            // vizioneaza mereu din surse BluRay sau WEB-DL, deci un candidat DVDRip nu
+            // are ce cauta nici macar ca fallback manual in lista din Stremio.
+            if (subFamily === 'low') continue;
+
+            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode);
             const cleanTitle = decodeHtml(sub.title || name);
 
             const seParam = (knownSeason && knownEpisode) ? `&season=${knownSeason}&episode=${knownEpisode}` : '';
@@ -223,7 +228,16 @@ builder.defineSubtitlesHandler(async function(args) {
         finalList = deduped.slice(0, 12);
     }
 
-    finalList.sort((a, b) => b.score - a.score);
+    // "hdtv" ramane in lista (rip-urile TV au de obicei acelasi timing ca WEB-DL),
+    // dar niciodata aleasa automat peste o varianta disc/web — o impingem mereu la
+    // finalul listei, indiferent de scor. In interiorul fiecarui grup, sortam tot
+    // dupa scor ca inainte.
+    finalList.sort((a, b) => {
+        const aHdtv = a.subFamily === 'hdtv';
+        const bHdtv = b.subFamily === 'hdtv';
+        if (aHdtv !== bHdtv) return aHdtv ? 1 : -1;
+        return b.score - a.score;
+    });
 
     console.log(`\n[SCOR] Clasament final pentru "${videoFilename || '(fara filename)'}"`);
     finalList.forEach((sub, i) => {
