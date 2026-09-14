@@ -171,6 +171,12 @@ function extractFromZip(buffer, videoFilename) {
     if (candidates.length === 0) {
         const txt = zipEntries.find(e => e.entryName.toLowerCase().endsWith('.txt'));
         if (txt) return txt.getData();
+
+        const nested = zipEntries.filter(e => /\.(rar|zip)$/i.test(e.entryName));
+        if (nested.length > 0) {
+            console.error(`[ZIP] Arhiva contine ${nested.length} arhive imbricate (probabil pachet multi-sezon), nu extragem recursiv: ${nested.map(e => e.entryName).join(', ')}`);
+            throw new Error('NESTED_ARCHIVE_UNSUPPORTED');
+        }
         throw new Error('NO_SRT_IN_ZIP');
     }
 
@@ -192,7 +198,18 @@ async function extractFromRar(buffer, videoFilename) {
             })
             .map(h => ({ name: h.name, size: h.unpSize || h.packSize || 0 }));
 
-        if (candidates.length === 0) throw new Error('NO_SRT_IN_RAR');
+        if (candidates.length === 0) {
+            // Unele pachete "serie completa" sunt o arhiva ce contine alte arhive
+            // imbricate (cate un .rar per sezon) — nu recursam in ele, deci nu avem
+            // ce extrage. Logam explicit distinct de un NO_SRT_IN_RAR obisnuit, ca
+            // sa fie clar dintr-o privire in loguri de ce a esuat descarcarea asta.
+            const nested = fileHeaders.filter(h => /\.(rar|zip)$/i.test(h.name));
+            if (nested.length > 0) {
+                console.error(`[RAR] Arhiva contine ${nested.length} arhive imbricate (probabil pachet multi-sezon), nu extragem recursiv: ${nested.map(h => h.name).join(', ')}`);
+                throw new Error('NESTED_ARCHIVE_UNSUPPORTED');
+            }
+            throw new Error('NO_SRT_IN_RAR');
+        }
 
         const best = pickBestSubtitleFile(candidates, videoFilename);
         console.log(`[RAR] Extrag: "${best.name}"`);
