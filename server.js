@@ -10,6 +10,7 @@ const iconv = require('iconv-lite');
 const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
 const cacheDb = require('./lib/cache');
+const BoundedCache = require('./lib/boundedCache');
 
 const app = express();
 app.use(cors());
@@ -33,8 +34,11 @@ function srtToVtt(srtText) {
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
 
-// Cache in memorie — layer rapid peste SQLite
-const memCache = new Map();
+// Cache in memorie — layer rapid peste SQLite. Continutul deja e persistat
+// pe disc (90 zile), deci acest L1 nu trebuie sa fie nemarginit — il tinem
+// mic si dam evacuare LRU, altfel textul complet al fiecarei subtitrari
+// descarcate vreodata ramanea in heap pentru totdeauna.
+const memCache = new BoundedCache({ ttlMs: 24 * 60 * 60 * 1000, maxEntries: 200 });
 const activeDownloads = new Map();
 let globalDownloadQueue = Promise.resolve();
 
