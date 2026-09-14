@@ -88,11 +88,11 @@ function getFileSourceType(text) {
     return null;
 }
 
-function scoreArchiveEntry(entryName, videoFilename) {
-    if (!videoFilename) return 0;
+function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) {
+    if (!videoFilename && !(knownSeason && knownEpisode)) return 0;
 
     const entry = entryName.toLowerCase();
-    const video = videoFilename.toLowerCase();
+    const video = (videoFilename || '').toLowerCase();
     let score = 0;
 
     const videoSrc = getFileSourceType(video);
@@ -122,22 +122,28 @@ function scoreArchiveEntry(entryName, videoFilename) {
         if (video.includes(codec) && entry.includes(codec)) { score += 20; break; }
     }
 
+    // Preferam sezonul/episodul cunoscut din ID-ul Stremio (sigur) in loc de regex
+    // pe numele fisierului video — care poate fi un placeholder opac de la o sursa
+    // debrid (altfel toti candidatii dintr-o arhiva multi-episod scoreaza 0 si
+    // alegerea devine esentialmente aleatorie dupa marime, extragand episod gresit).
     const seMatch = video.match(/s(\d{1,2})e(\d{1,2})/i);
-    if (seMatch) {
-        const se = `s${seMatch[1].padStart(2,'0')}e${seMatch[2].padStart(2,'0')}`;
+    const seSeason  = knownSeason  ? String(knownSeason)  : (seMatch ? seMatch[1] : null);
+    const seEpisode = knownEpisode ? String(knownEpisode) : (seMatch ? seMatch[2] : null);
+    if (seSeason && seEpisode) {
+        const se = `s${seSeason.padStart(2,'0')}e${seEpisode.padStart(2,'0')}`;
         if (entry.includes(se)) score += 120;
     }
 
     return score;
 }
 
-function pickBestSubtitleFile(candidates, videoFilename) {
+function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode) {
     if (candidates.length === 0) return null;
     if (candidates.length === 1) return candidates[0];
 
     const scored = candidates.map(c => ({
         entry: c,
-        matchScore: scoreArchiveEntry(c.name, videoFilename),
+        matchScore: scoreArchiveEntry(c.name, videoFilename, knownSeason, knownEpisode),
         size: c.size || 0
     }));
 
@@ -155,7 +161,7 @@ function pickBestSubtitleFile(candidates, videoFilename) {
     return scored[0].entry;
 }
 
-function extractFromZip(buffer, videoFilename) {
+function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode) {
     const zip = new AdmZip(buffer);
     const zipEntries = zip.getEntries();
 
@@ -180,11 +186,11 @@ function extractFromZip(buffer, videoFilename) {
         throw new Error('NO_SRT_IN_ZIP');
     }
 
-    const best = pickBestSubtitleFile(candidates, videoFilename);
+    const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
     return best._entry.getData();
 }
 
-async function extractFromRar(buffer, videoFilename) {
+async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode) {
     try {
         const { createExtractorFromData } = require('node-unrar-js');
         const extractor = await createExtractorFromData({ data: buffer });
@@ -211,7 +217,7 @@ async function extractFromRar(buffer, videoFilename) {
             throw new Error('NO_SRT_IN_RAR');
         }
 
-        const best = pickBestSubtitleFile(candidates, videoFilename);
+        const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
         console.log(`[RAR] Extrag: "${best.name}"`);
 
         const extracted = extractor.extract({ files: [best.name] });
@@ -230,6 +236,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     const source = req.query.source || 'regielive';
     const sessionCookie = req.query.cookie || '';
     const videoFilename = req.query.vf || '';
+    const knownSeason  = req.query.season  ? parseInt(req.query.season, 10)  : null;
+    const knownEpisode = req.query.episode ? parseInt(req.query.episode, 10) : null;
 
     if (!zipUrl) return res.status(400).send('URL lipsa');
 
@@ -307,9 +315,9 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         let rawData;
 
         if (archiveType === 'zip') {
-            rawData = extractFromZip(buffer, videoFilename);
+            rawData = extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
         } else if (archiveType === 'rar') {
-            rawData = await extractFromRar(buffer, videoFilename);
+            rawData = await extractFromRar(buffer, videoFilename, knownSeason, knownEpisode);
         } else {
             const preview = buffer.slice(0, 50).toString('utf8');
             if (preview.includes('-->') || /^\d+\s*\n/.test(preview)) {

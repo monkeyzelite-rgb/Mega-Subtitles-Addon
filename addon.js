@@ -74,6 +74,20 @@ builder.defineSubtitlesHandler(async function(args) {
     const videoFilenameLower = videoFilename.toLowerCase();
     const videoSize = args.extra && args.extra.videoSize ? args.extra.videoSize : null;
 
+    // Sezon/episod din ID-ul Stremio (tt.../sezon/episod), NU din filename.
+    // Filename-ul poate fi un placeholder opac (ex: un hash de la o sursa
+    // debrid/cache: "TIJG5EPGMC5X4CDE") care nu contine nicio informatie
+    // reala — daca scorer-ul si selectorul de fisier din arhiva s-ar baza
+    // doar pe regex peste filename, ar alege un episod complet gresit din
+    // pachetele multi-episod (s-a intamplat: episoade random extrase din
+    // arhive, niciunul cel cerut).
+    let knownSeason = null, knownEpisode = null;
+    if (args.type === 'series') {
+        const idParts = args.id.split(':');
+        knownSeason = idParts[1] ? parseInt(idParts[1], 10) : null;
+        knownEpisode = idParts[2] ? parseInt(idParts[2], 10) : null;
+    }
+
     let videoFamily = detectFamily(videoFilenameLower);
     let familySource = 'filename';
 
@@ -151,14 +165,16 @@ builder.defineSubtitlesHandler(async function(args) {
                 downloadUrl = `https://subtitrari.regielive.ro${sub.url}`;
             }
 
-            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily);
+            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode);
             const subFamily = detectFamily(sub.title);
             const cleanTitle = decodeHtml(sub.title || name);
 
+            const seParam = (knownSeason && knownEpisode) ? `&season=${knownSeason}&episode=${knownEpisode}` : '';
             allScored.push({
                 id: `${name}-${sub.id}`,
-                // Trimitem si filename-ul (vf) ca server.js sa aleaga fisierul corect din arhiva
-                url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}`,
+                // Trimitem si filename-ul (vf) + sezon/episod cunoscut, ca server.js sa
+                // aleaga fisierul corect din arhiva chiar daca vf e un placeholder opac
+                url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}${seParam}`,
                 lang: 'ron',
                 title: `${sourceLabel(name)} | ${cleanTitle}`,
                 score,
