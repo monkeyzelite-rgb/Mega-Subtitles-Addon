@@ -72,6 +72,16 @@ function srtToVtt(srtText) {
     // (mpv/ExoPlayer) trec peste fara sa se planga. Acceptam 1-2 cifre la ora si
     // completam mereu la 2, indiferent de cate cifre avea originalul.
     text = text.replace(/(\d{1,2}):(\d{2}):(\d{2}),(\d{3})/g, (_, h, m, s, ms) => `${h.padStart(2, '0')}:${m}:${s}.${ms}`);
+    // Unele fisiere sursa (confirmat pe unul real, descarcat de la RegieLive
+    // pentru "Obsession") sar linia goala dintre ultimul cue si linia de index
+    // urmatoare — de obicei chiar inaintea cue-ului promotional "Subtitrare
+    // descarcata de pe www.RegieLive.ro" adaugat de site. Rezultatul, dupa ce
+    // stripam linia de index, e o linie de timp lipita direct de textul
+    // cue-ului anterior, fara separator — WebVTT malformat. AVPlayer (iOS)
+    // respinge tot fisierul, playerele permisive nu se sesizeaza. Fortam o
+    // linie goala inaintea ORICAREI linii de timp care nu are deja una,
+    // indiferent de cauza — idempotent pe fisierele deja corecte.
+    text = text.replace(/([^\n])\n(\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3})/g, '$1\n\n$2');
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
 
