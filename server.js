@@ -537,6 +537,17 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         activeDownloads.delete(cacheKey);
         if (error.response?.status === 429) {
             console.error(`[X][${source}] RATE LIMIT atins.`);
+        } else {
+            // Pana acum, orice alta eroare decat 429 disparea complet — niciun
+            // mesaj, doar "500 Eroare interna" fara nicio pista. Logam explicit
+            // codul HTTP (daca a raspuns sursa), codul de eroare de retea
+            // (timeout, refuz de conexiune etc.) si mesajul, ca sa nu mai ghicim.
+            console.error(`[X][${source}] Descarcare esuata pentru ${zipUrl}:`);
+            console.error(`    Mesaj: ${error.message}`);
+            console.error(`    Cod retea: ${error.code || '(niciunul)'}`);
+            if (error.response) {
+                console.error(`    Status HTTP raspuns: ${error.response.status}`);
+            }
         }
         res.status(500).send('Eroare interna.');
     }
