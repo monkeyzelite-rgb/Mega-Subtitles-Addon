@@ -39,7 +39,13 @@ function fixRomanianDiacritics(text) {
 
 function srtToVtt(srtText) {
     let text = String(srtText).replace(/\r+/g, '').trim();
-    text = text.replace(/^\d+\s*$/gm, '');
+    // Eliminam linia de index SRT INCLUSIV linia noua de dupa — nu doar cifrele.
+    // Varianta veche (\d+\s*$ fara sa consume \n) lasa in urma un rand gol
+    // suplimentar intre fiecare cue (dublu \n\n\n in loc de \n\n unic), rezultand
+    // cue-uri WebVTT malformate. Player-ele permisive (mpv/ExoPlayer) ignora
+    // asta, dar playerul nativ iOS (AVPlayer) respinge fisierul ca invalid —
+    // confirmat direct: exact acelasi bug era prezent si in addonul vechi.
+    text = text.replace(/^\d+\n/gm, '');
     text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
