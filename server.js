@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const { getRouter } = require('stremio-addon-sdk');
@@ -11,6 +12,23 @@ const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
 const cacheDb = require('./lib/cacheStore');
 const BoundedCache = require('./lib/boundedCache');
+
+// node-unrar-js isi incarca singur fisierul unrar.wasm de pe disc, printr-un
+// mecanism intern (Emscripten) care construieste calea dinamic — nedetectabil
+// de instrumentul de trace al Vercel-ului la build, deci fisierul .wasm nu
+// ajunge in bundle-ul functiei serverless (ENOENT la runtime doar pe Vercel,
+// niciodata local/Pi unde tot node_modules e pe disc). Citim noi insine bytes-ii
+// cu un require.resolve() STATIC — pe care trace-ul chiar il recunoaste — si-i
+// dam explicit librariei, ocolind complet mecanismul ei intern de incarcare.
+// Functioneaza identic pe orice platforma, deci nu schimba nimic local/Pi.
+let unrarWasmBinary = null;
+try {
+    const wasmPath = require.resolve('node-unrar-js/dist/js/unrar.wasm');
+    const wasmBuffer = fs.readFileSync(wasmPath);
+    unrarWasmBinary = wasmBuffer.buffer.slice(wasmBuffer.byteOffset, wasmBuffer.byteOffset + wasmBuffer.byteLength);
+} catch (err) {
+    console.warn(`[RAR] Nu am putut preincarca unrar.wasm (${err.message}) — folosesc mecanismul implicit al librariei.`);
+}
 
 // Pe Vercel nu exista un proces persistent intre cereri — coada globala de
 // 1.5s intre descarcari (gandita pt. un server single-user, local/Pi) ar doar
@@ -280,7 +298,9 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
 async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
     try {
         const { createExtractorFromData } = require('node-unrar-js');
-        const extractor = await createExtractorFromData({ data: buffer });
+        const extractor = await createExtractorFromData(
+            unrarWasmBinary ? { data: buffer, wasmBinary: unrarWasmBinary } : { data: buffer }
+        );
         const list = extractor.getFileList();
         const fileHeaders = [...list.fileHeaders];
 
