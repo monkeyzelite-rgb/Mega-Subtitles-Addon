@@ -9,8 +9,18 @@ const AdmZip = require('adm-zip');
 const iconv = require('iconv-lite');
 const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
-const cacheDb = require('./lib/cache');
+const cacheDb = require('./lib/cacheStore');
 const BoundedCache = require('./lib/boundedCache');
+
+// Pe Vercel nu exista un proces persistent intre cereri — coada globala de
+// 1.5s intre descarcari (gandita pt. un server single-user, local/Pi) ar doar
+// incetini inutil accesul concurent al mai multor utilizatori, fara sa
+// protejeze de fapt nimic (RegieLive, singura sursa cu limita stricta
+// documentata, e deja protejata separat, distribuit — vezi lib/regielive.js).
+// Acelasi semnal decide si daca merita pornit cleanup-ul periodic mai jos —
+// pe Vercel fiecare invocare e scurta si separata, deci un setInterval n-ar
+// mai apuca sa faca nimic util.
+const IS_SERVERLESS = !!process.env.UPSTASH_REDIS_REST_URL;
 
 const app = express();
 app.use(cors());
@@ -48,22 +58,22 @@ const TITRARI_COOKIE = process.env.TITRARI_COOKIE || '';
 
 app.use(getRouter(addonInterface));
 
-app.get('/admin/clear-cache', (req, res) => {
+app.get('/admin/clear-cache', async (req, res) => {
     if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
     const memCleared = memCache.size;
     memCache.clear();
     activeDownloads.clear();
     const searchesCleared = clearSearchCache();
-    const dbCleared = cacheDb.clearAll();
-    res.send(`Cache golit: ${memCleared} memorie + ${searchesCleared} cautari + ${dbCleared} intrari SQLite.`);
+    const dbCleared = await cacheDb.clearAll();
+    res.send(`Cache golit: ${memCleared} memorie + ${searchesCleared} cautari + ${dbCleared} intrari ${cacheDb.backend}.`);
 });
 
-app.get('/admin/cache-stats', (req, res) => {
+app.get('/admin/cache-stats', async (req, res) => {
     if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
-    const s = cacheDb.stats();
+    const s = await cacheDb.stats();
     res.json({
         memorie: memCache.size,
-        sqlite: s
+        [cacheDb.backend]: s
     });
 });
 
@@ -377,8 +387,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         return sendSubtitleResponse(memCache.get(cacheKey), res);
     }
 
-    // 2. Cache pe disc (SQLite) — supravietuieste repornirii
-    const fromDb = cacheDb.getSubtitle(cacheKey);
+    // 2. Cache persistent (SQLite local sau Redis pe Vercel) — supravietuieste repornirii
+    const fromDb = await cacheDb.getSubtitle(cacheKey);
     if (fromDb) {
         console.log(`[CACHE-DB] Hit: ${videoFilename || zipUrl}`);
         memCache.set(cacheKey, fromDb);
@@ -468,16 +478,18 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         return iconv.decode(rawData, encoding);
     };
 
-    const queuedTask = new Promise((resolve, reject) => {
-        globalDownloadQueue = globalDownloadQueue.then(async () => {
-            try {
-                await new Promise(r => setTimeout(r, 1500));
-                resolve(await downloadTask());
-            } catch (e) {
-                reject(e);
-            }
-        }).catch(() => {});
-    });
+    const queuedTask = IS_SERVERLESS
+        ? downloadTask()
+        : new Promise((resolve, reject) => {
+            globalDownloadQueue = globalDownloadQueue.then(async () => {
+                try {
+                    await new Promise(r => setTimeout(r, 1500));
+                    resolve(await downloadTask());
+                } catch (e) {
+                    reject(e);
+                }
+            }).catch(() => {});
+        });
 
     activeDownloads.set(cacheKey, queuedTask);
 
@@ -485,7 +497,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         const subtitleText = await queuedTask;
         // Salvam in ambele layere de cache
         memCache.set(cacheKey, subtitleText);
-        cacheDb.setSubtitle(cacheKey, subtitleText);
+        await cacheDb.setSubtitle(cacheKey, subtitleText);
         activeDownloads.delete(cacheKey);
         return sendSubtitleResponse(subtitleText, res);
     } catch (error) {
@@ -497,14 +509,27 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
     }
 });
 
-// Curatam intrarile expirate o data pe zi
-setInterval(() => cacheDb.cleanup(), 24 * 60 * 60 * 1000);
+// Curatarea periodica are sens doar pe un proces persistent (local/Pi) — pe
+// Vercel fiecare invocare e scurta si separata, iar backend-ul Redis oricum
+// expira singur intrarile prin TTL nativ (cleanup() e no-op acolo).
+if (!IS_SERVERLESS) {
+    setInterval(() => cacheDb.cleanup(), 24 * 60 * 60 * 1000);
+}
 
-const port = process.env.PORT || 7000;
-app.listen(port, () => {
-    console.log(`RO Subs addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
-    const s = cacheDb.stats();
-    if (s.available) {
-        console.log(`[CACHE-DB] ${s.searches} cautari, ${s.subtitles} subtitrari, ${s.sizeMB} MB`);
-    }
-});
+// Pe Vercel, server.js e doar cerut ca modul (Vercel gestioneaza singur
+// invocarea HTTP prin app-ul exportat mai jos) — nu trebuie sa asculte pe un
+// port. Local (`node server.js`, sau viitor pe Raspberry Pi), ramane neschimbat.
+if (require.main === module) {
+    const port = process.env.PORT || 7000;
+    app.listen(port, async () => {
+        console.log(`RO Subs addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
+        const s = await cacheDb.stats();
+        if (s.available && cacheDb.backend === 'sqlite') {
+            console.log(`[CACHE-DB] ${s.searches} cautari, ${s.subtitles} subtitrari, ${s.sizeMB} MB`);
+        } else if (s.available) {
+            console.log(`[CACHE-DB] Backend ${cacheDb.backend}, ${s.keys ?? '?'} chei.`);
+        }
+    });
+}
+
+module.exports = app;
