@@ -1,7 +1,7 @@
 {
   "id": "ro.stremio.rosubs",
   "version": "1.0.0",
-  "name": "RO Subs",
+  "name": "Mega Subtitle Addon",
   "description": "Subtitrari romanesti - RegieLive, Titrari.ro, Subtitrari-noi.ro, Subs.ro",
   "logo": "https://i.imgur.com/your-logo.png",
   "resources": ["subtitles"],

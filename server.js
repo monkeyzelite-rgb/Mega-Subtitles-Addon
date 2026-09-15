@@ -566,7 +566,7 @@ if (!IS_SERVERLESS) {
 if (require.main === module) {
     const port = process.env.PORT || 7000;
     app.listen(port, async () => {
-        console.log(`RO Subs addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
+        console.log(`Mega Subtitle Addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
         const s = await cacheDb.stats();
         if (s.available && cacheDb.backend === 'sqlite') {
             console.log(`[CACHE-DB] ${s.searches} cautari, ${s.subtitles} subtitrari, ${s.sizeMB} MB`);
