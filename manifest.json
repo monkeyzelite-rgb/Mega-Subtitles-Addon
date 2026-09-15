@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "name": "Mega Subtitle Addon",
   "description": "Subtitrari romanesti - RegieLive, Titrari.ro, Subtitrari-noi.ro, Subs.ro",
-  "logo": "https://i.imgur.com/your-logo.png",
+  "logo": "https://mega-subtitles-addon.vercel.app/logo.png",
   "resources": ["subtitles"],
   "types": ["movie", "series"],
   "idPrefixes": ["tt"],
