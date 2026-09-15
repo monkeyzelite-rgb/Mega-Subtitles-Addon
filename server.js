@@ -64,7 +64,14 @@ function srtToVtt(srtText) {
     // asta, dar playerul nativ iOS (AVPlayer) respinge fisierul ca invalid —
     // confirmat direct: exact acelasi bug era prezent si in addonul vechi.
     text = text.replace(/^\d+\n/gm, '');
-    text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+    // Ora poate avea 1 SAU 2 cifre in SRT-urile scrise manual (ex. "0:45:47,000"
+    // in loc de "00:45:47,000") — regex-ul vechi cerea strict 2 cifre la ora, deci
+    // rata exact acest caz, lasand in urma o virgula si o ora pe o cifra, ambele
+    // nevalide in WebVTT. Confirmat direct: AVPlayer (iOS) respinge tot fisierul
+    // la primul asemenea timestamp gresit ("invalidTime"), desi playere permisive
+    // (mpv/ExoPlayer) trec peste fara sa se planga. Acceptam 1-2 cifre la ora si
+    // completam mereu la 2, indiferent de cate cifre avea originalul.
+    text = text.replace(/(\d{1,2}):(\d{2}):(\d{2}),(\d{3})/g, (_, h, m, s, ms) => `${h.padStart(2, '0')}:${m}:${s}.${ms}`);
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
 
