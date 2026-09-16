@@ -90,10 +90,18 @@ builder.defineSubtitlesHandler(async function(args) {
 
     let videoFamily = detectFamily(videoFilenameLower);
     let familySource = 'filename';
+    let videoFamilyIsGuess = false;
 
     if (!videoFamily && videoSize) {
         videoFamily = detectFamilyFromSize(videoSize, args.type);
         familySource = `videoSize(${(parseInt(videoSize) / (1024 * 1024 * 1024)).toFixed(1)}GB)`;
+        // Spre deosebire de o detectie din numele fisierului (care contine explicit
+        // "WEB-DL"/"BluRay"), asta e o GHICIRE dupa marime — pragurile sunt calibrate
+        // pt. filme/episoade de durata normala si pot clasifica gresit un episod
+        // scurt cu bitrate mare (anime, encoduri de calitate) drept "disc". Marcam
+        // ca sa nu fie folosita pentru penalizari agresive in scorer.js, doar pt.
+        // bonusuri (vezi calculateScore).
+        videoFamilyIsGuess = true;
     }
 
     const videoFps = detectFramerate(videoFilenameLower);
@@ -171,7 +179,7 @@ builder.defineSubtitlesHandler(async function(args) {
             // are ce cauta nici macar ca fallback manual in lista din Stremio.
             if (subFamily === 'low') continue;
 
-            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode);
+            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode, videoFamilyIsGuess);
             // Titlul mentioneaza explicit un ALT sezon decat cel cerut — nu e risc de
             // sincronizare, e continut garantat gresit. Eliminam complet, nu doar
             // penalizam (vezi lib/scorer.js unde se seteaza acest flag).
