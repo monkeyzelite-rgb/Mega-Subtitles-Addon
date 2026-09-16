@@ -57,6 +57,11 @@ function fixRomanianDiacritics(text) {
 
 function srtToVtt(srtText) {
     let text = String(srtText).replace(/\r+/g, '').trim();
+    // Unele .srt convertite dintr-un .ass/.ssa original pastreaza codurile de
+    // formatare ASS (ex. "{\an8}", "{\pos(320,240)}") — WebVTT nu le recunoaste
+    // deloc (doar "<" introduce marcaj in text), deci apar ca text vizibil,
+    // literal, peste replica reala. Le eliminam complet inainte de conversie.
+    text = text.replace(/\{\\[^}]*\}/g, '');
     // Eliminam linia de index SRT INCLUSIV linia noua de dupa — nu doar cifrele.
     // Varianta veche (\d+\s*$ fara sa consume \n) lasa in urma un rand gol
     // suplimentar intre fiecare cue (dublu \n\n\n in loc de \n\n unic), rezultand
@@ -325,6 +330,10 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
     const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
     const data = best._entry.getData();
     if (data.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
+    // Doar limita de sus era verificata — un fisier gol (placeholder ramas din
+    // greseala la upload, sau o intrare corupta) trecea nedetectat si ajungea
+    // trimis ca "WEBVTT" fara niciun cue, cu raspuns 200 normal.
+    if (data.length === 0) throw new Error('SUBTITLE_EMPTY');
     return data;
 }
 
@@ -390,6 +399,7 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
 
         const finalBuffer = Buffer.from(files[0].extraction);
         if (finalBuffer.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
+        if (finalBuffer.length === 0) throw new Error('SUBTITLE_EMPTY');
         return finalBuffer;
     } catch (err) {
         console.error('[RAR] Eroare extractie:', err.message);
