@@ -278,9 +278,10 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
         .map(e => ({ name: e.entryName, size: e.header.size || 0, _entry: e }));
 
     if (candidates.length === 0) {
-        const txt = zipEntries.find(e => e.entryName.toLowerCase().endsWith('.txt'));
-        if (txt) return txt.getData();
-
+        // O arhiva imbricata (probabil pachet multi-sezon) are prioritate fata de
+        // orice .txt gasit la nivelul de sus — altfel un README/Citeste-ma.txt (sau
+        // un fisier junk __MACOSX/._ceva.txt de pe Mac) era trimis silentios ca
+        // "subtitrare" in loc sa incercam arhiva reala de alaturi.
         const nested = zipEntries.filter(e => /\.(rar|zip)$/i.test(e.entryName));
         if (nested.length > 0) {
             const matchedName = (knownSeason && depth < MAX_NESTED_DEPTH)
@@ -303,6 +304,21 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
             console.error(`[ZIP] Arhiva contine ${nested.length} arhive imbricate (probabil pachet multi-sezon), nu extragem recursiv: ${nested.map(e => e.entryName).join(', ')}`);
             throw new Error('NESTED_ARCHIVE_UNSUPPORTED');
         }
+
+        // Fallback .txt — doar daca nu exista nicio arhiva imbricata. Excludem
+        // fisiere junk (__MACOSX, dotfiles) la fel ca la .srt/.sub mai sus, si
+        // validam ca arata a subtitrare reala (contine "-->" sau incepe cu un
+        // index numeric) inainte sa il acceptam — altfel un README ajungea sa
+        // fie trimis ca WebVTT fara niciun cue real.
+        const txt = zipEntries.find(e => {
+            const fn = e.entryName.toLowerCase();
+            const base = fn.split('/').pop();
+            if (fn.includes('__macosx') || base.startsWith('.') || !fn.endsWith('.txt')) return false;
+            const preview = e.getData().slice(0, 200).toString('utf8');
+            return preview.includes('-->') || /^\d+\s*\r?\n/.test(preview);
+        });
+        if (txt) return txt.getData();
+
         throw new Error('NO_SRT_IN_ZIP');
     }
 
