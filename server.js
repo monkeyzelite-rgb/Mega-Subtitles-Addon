@@ -370,8 +370,12 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
         .filter(e => {
             const fn = e.entryName.toLowerCase();
             const base = fn.split('/').pop();
+            // .ass/.ssa acceptate la fel ca .srt/.sub — confirmat pe productie
+            // (titrari.ro, One Piece): unele zip-uri contin doar scriptul .ass
+            // original, niciodata un .srt/.sub, si erau ignorate complet aici,
+            // aruncand NO_SRT_IN_ZIP desi subtitrarea buna exista in arhiva.
             return !fn.includes('__macosx') && !base.startsWith('.') &&
-                   (fn.endsWith('.srt') || fn.endsWith('.sub')) &&
+                   (fn.endsWith('.srt') || fn.endsWith('.sub') || fn.endsWith('.ass') || fn.endsWith('.ssa')) &&
                    (e.header.size || 0) <= MAX_SUBTITLE_FILE_SIZE;
         })
         .map(e => ({ name: e.entryName, size: e.header.size || 0, _entry: e }));
@@ -416,7 +420,7 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
             const preview = e.getData().slice(0, 200).toString('utf8');
             return preview.includes('-->') || /^\d+\s*\r?\n/.test(preview);
         });
-        if (txt) return txt.getData();
+        if (txt) return { data: txt.getData(), isAss: false };
 
         throw new Error('NO_SRT_IN_ZIP');
     }
@@ -429,7 +433,8 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
     // greseala la upload, sau o intrare corupta) trecea nedetectat si ajungea
     // trimis ca "WEBVTT" fara niciun cue, cu raspuns 200 normal.
     if (data.length === 0) throw new Error('SUBTITLE_EMPTY');
-    return data;
+    const isAss = /\.(ass|ssa)$/i.test(best.name);
+    return { data, isAss };
 }
 
 async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
@@ -444,7 +449,7 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         const candidates = fileHeaders
             .filter(h => {
                 const fn = h.name.toLowerCase();
-                return (fn.endsWith('.srt') || fn.endsWith('.sub')) &&
+                return (fn.endsWith('.srt') || fn.endsWith('.sub') || fn.endsWith('.ass') || fn.endsWith('.ssa')) &&
                        (h.unpSize || h.packSize || 0) <= MAX_SUBTITLE_FILE_SIZE;
             })
             .map(h => ({ name: h.name, size: h.unpSize || h.packSize || 0 }));
@@ -496,7 +501,7 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         const finalBuffer = Buffer.from(files[0].extraction);
         if (finalBuffer.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
         if (finalBuffer.length === 0) throw new Error('SUBTITLE_EMPTY');
-        return finalBuffer;
+        return { data: finalBuffer, isAss: /\.(ass|ssa)$/i.test(best.name) };
     } catch (err) {
         console.error('[RAR] Eroare extractie:', err.message);
         throw new Error('RAR_EXTRACT_FAILED');
@@ -614,9 +619,13 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         let isRawAss = false;
 
         if (archiveType === 'zip') {
-            rawData = await extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
+            const extracted = await extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
+            rawData = extracted.data;
+            isRawAss = extracted.isAss;
         } else if (archiveType === 'rar') {
-            rawData = await extractFromRar(buffer, videoFilename, knownSeason, knownEpisode);
+            const extracted = await extractFromRar(buffer, videoFilename, knownSeason, knownEpisode);
+            rawData = extracted.data;
+            isRawAss = extracted.isAss;
         } else {
             const preview = buffer.slice(0, 50).toString('utf8');
             if (preview.includes('-->') || /^\d+\s*\n/.test(preview)) {
