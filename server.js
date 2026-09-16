@@ -224,12 +224,22 @@ function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) 
     const seMatch = video.match(/s(\d{1,2})e(\d{1,2})/i);
     const seSeason  = knownSeason  ? String(knownSeason)  : (seMatch ? seMatch[1] : null);
     const seEpisode = knownEpisode ? String(knownEpisode) : (seMatch ? seMatch[2] : null);
-    if (seSeason && seEpisode) {
-        const se = `s${seSeason.padStart(2,'0')}e${seEpisode.padStart(2,'0')}`;
-        if (entry.includes(se)) score += 120;
+    if (seSeason && seEpisode && entryMatchesEpisode(entry, seSeason, seEpisode)) {
+        score += 120;
     }
 
     return score;
+}
+
+// Recunoaste episodul cerut in numele unei intrari din arhiva, in oricare din
+// formatele intalnite real pe siteurile romanesti: "s01e05"/"s1e5", "1x05"/
+// "01x05", sau "e05"/"ep05"/"episod(ul) 05" ca marcaj de sine statator. NU
+// acceptam un numar simplu, fara niciun context ("05" izolat) — prea ambiguu
+// (poate fi rezolutie, an, orice altceva).
+function entryMatchesEpisode(entry, season, episode) {
+    return new RegExp(`s0?${season}e0?${episode}(?!\\d)`, 'i').test(entry) ||
+           new RegExp(`\\b0?${season}x0?${episode}(?!\\d)`, 'i').test(entry) ||
+           new RegExp(`\\bep?(?:isod(?:e|ul)?)?[\\s._-]*0?${episode}(?!\\d)`, 'i').test(entry);
 }
 
 // Un pachet "serie completa" e adesea o arhiva exterioara ce contine cate o
@@ -251,8 +261,22 @@ function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpiso
     const scored = candidates.map(c => ({
         entry: c,
         matchScore: scoreArchiveEntry(c.name, videoFilename, knownSeason, knownEpisode),
+        matchesEpisode: (knownSeason && knownEpisode)
+            ? entryMatchesEpisode(c.name.toLowerCase(), String(knownSeason), String(knownEpisode))
+            : null,
         size: c.size || 0
     }));
+
+    // Stim exact ce episod cautam, arhiva are mai multe fisiere, dar NICIUNUL nu
+    // poate fi identificat pozitiv ca fiind episodul cerut (nicio conventie de
+    // denumire recunoscuta) — nu ghicim dupa marime. Aceeasi conventie ca la
+    // arhivele imbricate ambigue mai jos (findSeasonMatchedNestedArchive): o
+    // alegere gresita, silentioasa, e mai rea decat un esec explicit, logat.
+    if (knownSeason && knownEpisode && !scored.some(s => s.matchesEpisode)) {
+        const wanted = `S${String(knownSeason).padStart(2, '0')}E${String(knownEpisode).padStart(2, '0')}`;
+        console.error(`[ARHIVA] ${candidates.length} fisiere, dar niciunul nu poate fi identificat ca ${wanted} — refuz sa aleg dupa marime: ${candidates.map(c => c.name).join(', ')}`);
+        return null;
+    }
 
     scored.sort((a, b) => {
         if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
@@ -328,6 +352,7 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
     }
 
     const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
+    if (!best) throw new Error('EPISODE_NOT_IDENTIFIED');
     const data = best._entry.getData();
     if (data.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
     // Doar limita de sus era verificata — un fisier gol (placeholder ramas din
@@ -391,6 +416,7 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         }
 
         const best = pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode);
+        if (!best) throw new Error('EPISODE_NOT_IDENTIFIED');
         console.log(`[RAR] Extrag: "${best.name}"`);
 
         const extracted = extractor.extract({ files: [best.name] });
