@@ -46,6 +46,36 @@ function sourceLabel(source) {
     return labels[source] || source;
 }
 
+// Etichete de afisare (doar cosmetic, in titlul trimis catre Stremio) — nu
+// influenteaza subFamily/scorul, care raman calculate din getSourceType().
+// Ordinea conteaza: cuvintele-cheie mai specifice sunt verificate inaintea
+// celor generice (ex. "bdrip" inaintea lui "bd"), la fel ca in lib/scorer.js.
+const QUALITY_DISPLAY_LABELS = {
+    disc: [
+        ['bdremux', 'BDRemux'], ['remux', 'Remux'], ['blu-ray', 'BluRay'], ['bluray', 'BluRay'],
+        ['bdrip', 'BDRip'], ['brrip', 'BRRip'], ['uhdbd', 'UHD BluRay'], ['uhd', 'UHD'],
+        ['hddvd', 'HD-DVD'], ['bd', 'BD']
+    ],
+    web: [
+        ['web-dl', 'WEB-DL'], ['webdl', 'WEB-DL'], ['web.dl', 'WEB-DL'],
+        ['web-rip', 'WEBRip'], ['webrip', 'WEBRip'],
+        ['amzn', 'AMZN'], ['nf', 'NF'], ['hmax', 'HMAX'], ['dsnp', 'DSNP'], ['web', 'WEB']
+    ],
+    hdtv: [
+        ['hdtv', 'HDTV'], ['pdtv', 'PDTV'], ['dsrip', 'DSR'], ['dsr', 'DSR'], ['tvrip', 'TVRip']
+    ]
+};
+
+function detectQualityLabel(text, family) {
+    const table = QUALITY_DISPLAY_LABELS[family];
+    if (!table) return null;
+    const t = (text || '').toLowerCase();
+    for (const [keyword, label] of table) {
+        if (t.includes(keyword)) return label;
+    }
+    return null;
+}
+
 function decodeHtml(text) {
     return (text || '')
         .replace(/&#039;/g, "'")
@@ -185,6 +215,7 @@ builder.defineSubtitlesHandler(async function(args) {
             // penalizam (vezi lib/scorer.js unde se seteaza acest flag).
             if (breakdown.wrongSeason) continue;
             const cleanTitle = decodeHtml(sub.title || name);
+            const qualityLabel = detectQualityLabel(sub.title, subFamily) || sourceLabel(name);
 
             const seParam = (knownSeason && knownEpisode) ? `&season=${knownSeason}&episode=${knownEpisode}` : '';
             allScored.push({
@@ -193,7 +224,7 @@ builder.defineSubtitlesHandler(async function(args) {
                 // aleaga fisierul corect din arhiva chiar daca vf e un placeholder opac
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}${seParam}`,
                 lang: 'ron',
-                title: `${sourceLabel(name)} | ${cleanTitle}`,
+                title: `${qualityLabel} | ${cleanTitle}`,
                 score,
                 breakdown,
                 subFamily,
