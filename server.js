@@ -90,6 +90,76 @@ function srtToVtt(srtText) {
     return 'WEBVTT\n\n' + text.trim() + '\n';
 }
 
+function parseAssTime(assTime) {
+    // ASS foloseste H:MM:SS.cc (ora pe 1 cifra, centizecimi pe 2 cifre) — SRT
+    // vrea HH:MM:SS,mmm. Adaugam un 0 la capat ca sa transformam centizecimi in
+    // milizecimi (cc -> ccc0), fara sa pierdem precizie.
+    const m = String(assTime).trim().match(/^(\d+):(\d{2}):(\d{2})\.(\d{2})$/);
+    if (!m) return null;
+    const [, h, mi, s, cs] = m;
+    return `${h.padStart(2, '0')}:${mi}:${s},${cs}0`;
+}
+
+// Convertor ASS/SSA -> SRT. Confirmat pe productie (One Piece S02E06, sursa
+// titrari.ro): unele link-uri de descarcare NU sunt arhive, ci fisierul .ass
+// original trimis direct, cu Content-Type application/octet-stream — codul
+// de mai jos (detectArchiveType + fallback SRT) nu recunostea deloc acest
+// caz si arunca UNKNOWN_FORMAT, deci userul primea "subtitle failed to load"
+// in Stremio pentru acel rezultat. Extragem liniile "Dialogue:" din sectiunea
+// [Events], respectand ordinea reala a campurilor din linia ei "Format:" (nu
+// presupunem o ordine fixa), si recompunem un SRT valid — restul pipeline-ului
+// (srtToVtt) stie deja sa converteasca SRT -> WebVTT si sa elimine codurile
+// de formatare ASS ramase in text (ex. "{\an8}").
+function assToSrt(assText) {
+    const lines = String(assText).replace(/\r\n/g, '\n').split('\n');
+
+    let inEvents = false;
+    let startIdx = -1, endIdx = -1, textIdx = -1;
+    const cues = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (/^\[.+\]$/.test(trimmed)) {
+            inEvents = /^\[Events\]$/i.test(trimmed);
+            continue;
+        }
+        if (!inEvents) continue;
+
+        if (/^Format:/i.test(trimmed)) {
+            const fields = trimmed.slice(trimmed.indexOf(':') + 1).split(',').map(f => f.trim().toLowerCase());
+            startIdx = fields.indexOf('start');
+            endIdx = fields.indexOf('end');
+            textIdx = fields.indexOf('text');
+            continue;
+        }
+
+        if (/^Dialogue:/i.test(trimmed) && textIdx >= 0) {
+            const parts = trimmed.slice(trimmed.indexOf(':') + 1).split(',');
+            if (parts.length <= textIdx) continue;
+
+            // Textul e mereu ultimul camp din spec-ul ASS, dar poate contine el
+            // insusi virgule — recompunem tot ce a ramas de la indexul lui incolo.
+            const start = parseAssTime(parts[startIdx]);
+            const end = parseAssTime(parts[endIdx]);
+            if (!start || !end) continue;
+
+            const cleanText = parts.slice(textIdx).join(',')
+                .replace(/\\N|\\n/g, '\n')
+                .replace(/\\h/g, ' ')
+                .trim();
+            if (!cleanText) continue;
+
+            cues.push({ start, end, text: cleanText });
+        }
+    }
+
+    // AVPlayer (iOS) e strict si la ordinea cue-urilor — unele .ass au liniile
+    // de dialog nesortate cronologic (actori/straturi diferite intercalate).
+    cues.sort((a, b) => a.start.localeCompare(b.start));
+
+    return cues.map((c, i) => `${i + 1}\n${c.start} --> ${c.end}\n${c.text}\n`).join('\n');
+}
+
 // Cache in memorie — layer rapid peste SQLite. Continutul deja e persistat
 // pe disc (90 zile), deci acest L1 nu trebuie sa fie nemarginit — il tinem
 // mic si dam evacuare LRU, altfel textul complet al fiecarei subtitrari
@@ -541,6 +611,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         console.log(`[ARHIVA] Tip detectat: ${archiveType} (${buffer.length} bytes)`);
 
         let rawData;
+        let isRawAss = false;
 
         if (archiveType === 'zip') {
             rawData = await extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
@@ -552,13 +623,24 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
                 console.log(`[ARHIVA] SRT direct, il folosesc ca atare.`);
                 rawData = buffer;
             } else {
-                const bodyStr = buffer.toString('utf8');
-                const titleMatch = bodyStr.match(/<title>([\s\S]*?)<\/title>/i);
-                console.error(`[X][${source}] Format necunoscut!`);
-                console.error(`    Content-Type: ${response.headers['content-type'] || ''}`);
-                console.error(`    <title>: ${titleMatch ? titleMatch[1].trim() : '(fara title)'}`);
-                console.error(`    Primele 200 chars: ${bodyStr.slice(0, 200)}`);
-                throw new Error('UNKNOWN_FORMAT');
+                // Markerii ASS/SSA ("[Script Info]", "Dialogue:") sunt ASCII pur,
+                // deci ii putem cauta corect indiferent de encoding-ul real al
+                // fisierului (utf8/windows-1250/etc.) — decodarea corecta se face
+                // oricum mai jos, inainte de conversia efectiva la SRT.
+                const asciiPreview = buffer.toString('latin1');
+                if (/\[Script Info\]/i.test(asciiPreview) && /\r?\nDialogue:\s*\d/i.test(asciiPreview)) {
+                    console.log(`[ARHIVA] ASS/SSA direct (fara arhiva), il convertesc la SRT.`);
+                    rawData = buffer;
+                    isRawAss = true;
+                } else {
+                    const bodyStr = buffer.toString('utf8');
+                    const titleMatch = bodyStr.match(/<title>([\s\S]*?)<\/title>/i);
+                    console.error(`[X][${source}] Format necunoscut!`);
+                    console.error(`    Content-Type: ${response.headers['content-type'] || ''}`);
+                    console.error(`    <title>: ${titleMatch ? titleMatch[1].trim() : '(fara title)'}`);
+                    console.error(`    Primele 200 chars: ${bodyStr.slice(0, 200)}`);
+                    throw new Error('UNKNOWN_FORMAT');
+                }
             }
         }
 
@@ -570,7 +652,8 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         }
         console.log(`[ENCODING] Detectat: ${detected?.encoding} → folosesc: ${encoding}`);
 
-        return iconv.decode(rawData, encoding);
+        const decoded = iconv.decode(rawData, encoding);
+        return isRawAss ? assToSrt(decoded) : decoded;
     };
 
     const queuedTask = IS_SERVERLESS
