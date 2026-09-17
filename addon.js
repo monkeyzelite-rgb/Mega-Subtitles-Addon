@@ -231,6 +231,13 @@ builder.defineSubtitlesHandler(async function(args) {
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}${seParam}`,
                 lang: 'ron',
                 title: `${qualityLabel} | ${cleanTitle}`,
+                // "label" e documentat oficial in modelul de subtitrare al Nuvio
+                // (id/url/lang/label — vezi deepwiki.com/tapframe/NuvioTV/6.4-subtitle-system),
+                // exact ca "text de afisat sub limba". Stremio nu-l foloseste (aceeasi
+                // situatie ca "title" — cerere deschisa, nefinalizata, vezi issue #936),
+                // deci ramane invizibil acolo, dar Nuvio ar trebui sa-l arate in locul
+                // lui "id" (pe care il foloseam ca ocolis inainte sa gasim campul asta).
+                label: `${qualityLabel} · ${sourceLabel(name)}`,
                 score,
                 breakdown,
                 subFamily,
@@ -309,7 +316,8 @@ builder.defineSubtitlesHandler(async function(args) {
         id: sub.id,
         url: sub.url,
         lang: sub.lang,
-        title: sub.title
+        title: sub.title,
+        label: sub.label
     }));
 
     return { subtitles };
