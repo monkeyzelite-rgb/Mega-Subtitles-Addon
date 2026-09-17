@@ -253,6 +253,32 @@ function getFileSourceType(text) {
     return null;
 }
 
+// Confirmat pe productie (Ghosts of Mars, arhiva titrari id=96539): unele
+// arhive de pe aceste site-uri (in principiu exclusiv romanesti) contin de
+// fapt fisiere din mai multe limbi ("z srt23 ro-r ...", "z srt23 uk-hi ...",
+// "z srt23 uk ..."), fara nicio diferenta de scor intre ele (aceeasi sursa,
+// rezolutie, grup) — tie-break-ul pe marime alegea silentios varianta engleza
+// (mai mare, din cauza descrierilor audio pt. hipoacuzici) in locul celei
+// romane, aflata chiar alaturi in aceeasi arhiva. Verificam token cu token
+// (nu substring, ca sa nu prindem "ro" din interiorul altor cuvinte precum
+// numele unui grup de release) numele fiecarei intrari din arhiva.
+const RO_LANG_TOKENS = new Set(['ro', 'rom', 'ron', 'romana', 'romina', 'rumana']);
+const FOREIGN_LANG_TOKENS = new Set([
+    'en', 'eng', 'uk', 'gb', 'us', 'usa',
+    'fr', 'fra', 'fre', 'de', 'ger', 'deu', 'es', 'spa', 'it', 'ita',
+    'nl', 'dut', 'nld', 'pt', 'por', 'bra', 'ru', 'rus', 'hu', 'hun',
+    'bg', 'bul', 'gr', 'gre', 'ell', 'tr', 'tur', 'pl', 'pol',
+    'cz', 'cze', 'ces', 'sk', 'slo', 'ar', 'ara', 'zh', 'chi', 'zho',
+    'ja', 'jpn', 'ko', 'kor'
+]);
+
+function detectArchiveEntryLanguage(entryName) {
+    const tokens = entryName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (tokens.some(t => RO_LANG_TOKENS.has(t))) return 'ro';
+    if (tokens.some(t => FOREIGN_LANG_TOKENS.has(t))) return 'foreign';
+    return null;
+}
+
 function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) {
     if (!videoFilename && !(knownSeason && knownEpisode)) return 0;
 
@@ -326,6 +352,21 @@ function findSeasonMatchedNestedArchive(nestedNames, knownSeason) {
 
 function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpisode) {
     if (candidates.length === 0) return null;
+
+    // Excludem complet fisierele identificate CU CERTITUDINE ca fiind in alta
+    // limba decat romana — dar doar daca ramane cel putin o alternativa (fie
+    // marcata explicit "ro", fie fara niciun marcaj de limba deloc, cazul
+    // marii majoritati a arhivelor de pe aceste site-uri). Daca TOATE
+    // fisierele par straine (sau niciunul nu e clar), nu ghicim si lasam
+    // comportamentul de scor obisnuit sa decida, neschimbat.
+    const withLang = candidates.map(c => ({ ...c, _lang: detectArchiveEntryLanguage(c.name) }));
+    const nonForeign = withLang.filter(c => c._lang !== 'foreign');
+    if (nonForeign.length > 0 && nonForeign.length < candidates.length) {
+        const excluded = withLang.filter(c => c._lang === 'foreign').map(c => c.name);
+        console.log(`[ARHIVA] Exclud ${excluded.length} fisier(e) dintr-o alta limba: ${excluded.join(', ')}`);
+        candidates = nonForeign;
+    }
+
     if (candidates.length === 1) return candidates[0];
 
     const scored = candidates.map(c => ({
