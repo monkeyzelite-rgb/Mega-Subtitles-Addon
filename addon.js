@@ -219,7 +219,13 @@ builder.defineSubtitlesHandler(async function(args) {
 
             const seParam = (knownSeason && knownEpisode) ? `&season=${knownSeason}&episode=${knownEpisode}` : '';
             allScored.push({
-                id: `${name}-${sub.id}`,
+                // Protocolul Stremio nu impune niciun format lui "id" ("could be any
+                // string") si nu-l foloseste la descarcarea efectiva (asta face "url"-ul
+                // de mai jos) — deci putem baga in el eticheta de calitate fara niciun
+                // risc. Stremio nu afiseaza oricum acest camp (confirmat: arata doar
+                // numele addon-ului), dar Nuvio il afiseaza direct sub limba, deci acolo
+                // devine vizibil exact tipul sursei (BluRay/BDRip/WEB-DL/etc).
+                id: `${qualityLabel.replace(/\s+/g, '-')}-${name}-${sub.id}`,
                 // Trimitem si filename-ul (vf) + sezon/episod cunoscut, ca server.js sa
                 // aleaga fisierul corect din arhiva chiar daca vf e un placeholder opac
                 url: `${APP_URL}/download.vtt?url=${encodeURIComponent(downloadUrl)}&source=${name}&cookie=${encodeURIComponent(sub.cookie || '')}&vf=${encodeURIComponent(videoFilename)}${seParam}`,
