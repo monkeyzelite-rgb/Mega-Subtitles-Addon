@@ -160,6 +160,53 @@ function assToSrt(assText) {
     return cues.map((c, i) => `${i + 1}\n${c.start} --> ${c.end}\n${c.text}\n`).join('\n');
 }
 
+// Detectie + convertor MicroDVD (.sub cu timestamp-uri pe CADRE, nu pe timp:
+// "{508}{583}text", "|" in loc de linie noua) -> SRT. Confirmat pe productie
+// (Titrari id=8614, Ghosts of Mars): descarcarea directa (fara arhiva) e chiar
+// acest format, needetectat de niciun cod existent (nu are "-->" ca SRT, nici
+// "[Script Info]"/"Dialogue:" ca ASS) — arunca UNKNOWN_FORMAT desi traducerea
+// e completa si buna. Verificat direct: fisierul n-are un header de fps (nu
+// exista o linie gen "{1}{1}25"), dar cadrul maxim (133620) imparte la 23.976
+// fps la ~93 minute — foarte aproape de durata reala a filmului (98 min); la
+// 25fps ar da ~89min si la 29.97fps ~74min, ambele clar gresite. 23.976fps e
+// standardul de facto pt. rip-urile de film din era asta (comunitatea asta de
+// subtitrari romanesti, inceput de 2000), asa ca il folosim ca implicit.
+const MICRODVD_DEFAULT_FPS = 23.976;
+
+function isMicroDvdText(text) {
+    const firstLine = String(text).replace(/^﻿/, '').trimStart().split(/\r?\n/, 1)[0] || '';
+    return /^\{\d+\}\{\d+\}/.test(firstLine);
+}
+
+function microDvdToSrt(microDvdText, fps = MICRODVD_DEFAULT_FPS) {
+    const lines = String(microDvdText).replace(/\r\n/g, '\n').split('\n');
+    const cues = [];
+
+    const frameToSrtTime = (frame) => {
+        let ms = Math.round((frame / fps) * 1000);
+        const h = Math.floor(ms / 3600000); ms -= h * 3600000;
+        const m = Math.floor(ms / 60000); ms -= m * 60000;
+        const s = Math.floor(ms / 1000); ms -= s * 1000;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+    };
+
+    for (const line of lines) {
+        const m = line.match(/^\{(\d+)\}\{(\d+)\}(.*)$/);
+        if (!m) continue;
+        const [, startFrame, endFrame, rawText] = m;
+        // Codurile de stil MicroDVD ("{y:i}" italic, "{c:$FFFFFF}" culoare, etc.)
+        // apar ca bloc separat, distinct de perechea obligatorie {start}{end} de
+        // mai sus — le eliminam la fel cum srtToVtt elimina deja codurile ASS
+        // ramase intr-un .srt convertit, ca sa nu apara ca text vizibil literal.
+        const cleanText = rawText.replace(/\{[a-zA-Z]:[^}]*\}/g, '').replace(/\|/g, '\n').trim();
+        if (!cleanText) continue;
+        cues.push({ start: frameToSrtTime(parseInt(startFrame, 10)), end: frameToSrtTime(parseInt(endFrame, 10)), text: cleanText });
+    }
+
+    cues.sort((a, b) => a.start.localeCompare(b.start));
+    return cues.map((c, i) => `${i + 1}\n${c.start} --> ${c.end}\n${c.text}\n`).join('\n');
+}
+
 // Cache in memorie — layer rapid peste SQLite. Continutul deja e persistat
 // pe disc (90 zile), deci acest L1 nu trebuie sa fie nemarginit — il tinem
 // mic si dam evacuare LRU, altfel textul complet al fiecarei subtitrari
@@ -475,7 +522,14 @@ async function extractFromZip(buffer, videoFilename, knownSeason, knownEpisode, 
     // trimis ca "WEBVTT" fara niciun cue, cu raspuns 200 normal.
     if (data.length === 0) throw new Error('SUBTITLE_EMPTY');
     const isAss = /\.(ass|ssa)$/i.test(best.name);
-    return { data, isAss };
+    // ".sub" e ambiguu (MicroDVD si SubViewer folosesc aceeasi extensie) — spre
+    // deosebire de .ass/.ssa mai sus, aici verificam CONTINUTUL, nu extensia.
+    // Fara asta, un MicroDVD extras dintr-o arhiva trecea nedetectat (nu
+    // arunca nicio eroare, dar srtToVtt nu recunoaste "{508}{583}" ca linie de
+    // timp) si ajungea trimis ca WebVTT gol, fara niciun cue — o subtitrare
+    // "esuata silentios", mai rea decat eroarea explicita pe care o rezolvam.
+    const isMicroDvd = !isAss && isMicroDvdText(data.toString('latin1', 0, 200));
+    return { data, isAss, isMicroDvd };
 }
 
 async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, depth = 0) {
@@ -542,7 +596,10 @@ async function extractFromRar(buffer, videoFilename, knownSeason, knownEpisode, 
         const finalBuffer = Buffer.from(files[0].extraction);
         if (finalBuffer.length > MAX_SUBTITLE_FILE_SIZE) throw new Error('SUBTITLE_TOO_LARGE');
         if (finalBuffer.length === 0) throw new Error('SUBTITLE_EMPTY');
-        return { data: finalBuffer, isAss: /\.(ass|ssa)$/i.test(best.name) };
+        const isAss = /\.(ass|ssa)$/i.test(best.name);
+        // Acelasi motiv ca in extractFromZip: ".sub" e ambiguu, verificam continutul.
+        const isMicroDvd = !isAss && isMicroDvdText(finalBuffer.toString('latin1', 0, 200));
+        return { data: finalBuffer, isAss, isMicroDvd };
     } catch (err) {
         console.error('[RAR] Eroare extractie:', err.message);
         throw new Error('RAR_EXTRACT_FAILED');
@@ -658,15 +715,18 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
 
         let rawData;
         let isRawAss = false;
+        let isRawMicroDvd = false;
 
         if (archiveType === 'zip') {
             const extracted = await extractFromZip(buffer, videoFilename, knownSeason, knownEpisode);
             rawData = extracted.data;
             isRawAss = extracted.isAss;
+            isRawMicroDvd = extracted.isMicroDvd;
         } else if (archiveType === 'rar') {
             const extracted = await extractFromRar(buffer, videoFilename, knownSeason, knownEpisode);
             rawData = extracted.data;
             isRawAss = extracted.isAss;
+            isRawMicroDvd = extracted.isMicroDvd;
         } else {
             const preview = buffer.slice(0, 50).toString('utf8');
             if (preview.includes('-->') || /^\d+\s*\n/.test(preview)) {
@@ -682,6 +742,13 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
                     console.log(`[ARHIVA] ASS/SSA direct (fara arhiva), il convertesc la SRT.`);
                     rawData = buffer;
                     isRawAss = true;
+                } else if (isMicroDvdText(asciiPreview)) {
+                    // Confirmat pe productie (Titrari id=8614, Ghosts of Mars): un
+                    // .sub MicroDVD (timestamp pe cadre) servit direct, fara arhiva —
+                    // vezi comentariul de la microDvdToSrt() pt. detaliile pe fps.
+                    console.log(`[ARHIVA] MicroDVD direct (fara arhiva), il convertesc la SRT.`);
+                    rawData = buffer;
+                    isRawMicroDvd = true;
                 } else {
                     const bodyStr = buffer.toString('utf8');
                     const titleMatch = bodyStr.match(/<title>([\s\S]*?)<\/title>/i);
@@ -703,7 +770,9 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         console.log(`[ENCODING] Detectat: ${detected?.encoding} → folosesc: ${encoding}`);
 
         const decoded = iconv.decode(rawData, encoding);
-        return isRawAss ? assToSrt(decoded) : decoded;
+        if (isRawAss) return assToSrt(decoded);
+        if (isRawMicroDvd) return microDvdToSrt(decoded);
+        return decoded;
     };
 
     const queuedTask = IS_SERVERLESS
