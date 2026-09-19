@@ -32,13 +32,97 @@ try {
 
 // Pe Vercel nu exista un proces persistent intre cereri — coada globala de
 // 1.5s intre descarcari (gandita pt. un server single-user, local/Pi) ar doar
-// incetini inutil accesul concurent al mai multor utilizatori, fara sa
-// protejeze de fapt nimic (RegieLive, singura sursa cu limita stricta
-// documentata, e deja protejata separat, distribuit — vezi lib/regielive.js).
-// Acelasi semnal decide si daca merita pornit cleanup-ul periodic mai jos —
-// pe Vercel fiecare invocare e scurta si separata, deci un setInterval n-ar
-// mai apuca sa faca nimic util.
+// incetini inutil accesul concurent al mai multor utilizatori. Acelasi semnal
+// decide si daca merita pornit cleanup-ul periodic mai jos — pe Vercel fiecare
+// invocare e scurta si separata, deci un setInterval n-ar mai apuca sa faca
+// nimic util.
+//
+// ATENTIE: coada de mai jos protejeaza doar rularea locala/Pi (un singur
+// proces). Pe Vercel, descarcarile RegieLive au propria lor protectie
+// distribuita separata (vezi regieliveDownloadLimiter mai jos) — spre
+// deosebire de ce spunea comentariul vechi aici, limitatorul distribuit din
+// lib/regielive.js acopera DOAR cautarea (api.regielive.ro/bazarr/search.php),
+// nu si descarcarea efectiva a arhivei (subtitrari.regielive.ro/descarca-*),
+// care pana acum nu avea absolut nicio protectie pe Vercel. Confirmat pe
+// productie (Evil Dead Burn, 19 sept.): 6 din 12 descarcari RegieLive au picat
+// cu "RATE LIMIT atins" cand au fost cerute rapid, una dupa alta.
 const IS_SERVERLESS = !!process.env.UPSTASH_REDIS_REST_URL;
+
+// --- Limitator distribuit pentru DESCARCAREA de pe RegieLive ---
+// Nu avem o cifra exacta de la RegieLive pt. descarcari (spre deosebire de
+// cautare, unde ni s-a dat explicit "8/min, burst 2/sec") — admin-ul lor a
+// descris-o doar ca "limita dinamica, dupa reputatia IP-ului" plus un prag de
+// CAPTCHA care blocheaza descarcarile ~24h daca il atingem. Fara o cifra
+// exacta, alegem acelasi ritm folosit deja cu succes in productie de addon-ul
+// sora (stremio-regielive, pe Render): maxim 1 descarcare la fiecare 1.5s,
+// aplicat GLOBAL (nu per-utilizator) — pe Vercel, spre deosebire de un singur
+// proces Render, mai multe invocari serverless concurente n-ar respecta
+// deloc acest ritm fara o coordonare distribuita (Redis), de-asta un simplu
+// interval in memorie (ca la coada locala de mai sus) nu ar functiona aici.
+const REGIELIVE_DOWNLOAD_MIN_INTERVAL = '1500 ms';
+const MAX_DOWNLOAD_WAIT_MS = 4000; // acelasi plafon ca la asteptarea de cautare din regielive.js
+let regieliveDownloadLimiter = null;
+
+if (IS_SERVERLESS) {
+    try {
+        const { Redis } = require('@upstash/redis');
+        const { Ratelimit } = require('@upstash/ratelimit');
+        const redis = new Redis({
+            url: process.env.UPSTASH_REDIS_REST_URL,
+            token: process.env.UPSTASH_REDIS_REST_TOKEN
+        });
+        regieliveDownloadLimiter = new Ratelimit({
+            redis,
+            limiter: Ratelimit.slidingWindow(1, REGIELIVE_DOWNLOAD_MIN_INTERVAL),
+            prefix: 'rl:regielive:download'
+        });
+        console.log('[REGIELIVE] Limitator distribuit pentru descarcare activ.');
+    } catch (err) {
+        console.warn(`[REGIELIVE] Limitator de descarcare indisponibil (${err.message}) — descarcarile raman neprotejate.`);
+    }
+}
+
+// Asteapta (marginit la MAX_DOWNLOAD_WAIT_MS) pana cand e liber un slot de
+// descarcare RegieLive. Un singur apel Redis, nu polling — folosim direct
+// "reset"-ul intors de Ratelimit ca sa stim exact cat sa asteptam, in loc sa
+// verificam repetat. Daca limitatorul nu e disponibil (local/Pi fara Redis,
+// sau o eroare de retea), continuam neconditionat — mai bine incercam si
+// riscam un 429 (prins oricum de fetchWithRetry429 mai jos) decat sa blocam
+// userul la nesfarsit pe o protectie care oricum nu functioneaza.
+async function waitForRegieliveDownloadSlot() {
+    if (!regieliveDownloadLimiter) return;
+    try {
+        const result = await regieliveDownloadLimiter.limit('downloads');
+        if (result.success) return;
+        const waitMs = Math.min(Math.max(result.reset - Date.now(), 0), MAX_DOWNLOAD_WAIT_MS);
+        if (waitMs > 0) {
+            console.log(`[REGIELIVE] Slot de descarcare ocupat, astept ${waitMs}ms.`);
+            await new Promise(r => setTimeout(r, waitMs));
+        }
+    } catch (err) {
+        console.warn(`[REGIELIVE] Eroare la limitatorul de descarcare (${err.message}), continui oricum.`);
+    }
+}
+
+// Reincearca automat o descarcare care a picat cu 429 (rate-limit trecator) —
+// confirmat pe productie ca aceste esecuri sunt adesea trecatoare (functioneaza
+// la o reincercare manuala, la cateva secunde distanta). Doar 429 se reincearca;
+// orice alta eroare (retea, 404, etc.) e aruncata imediat, neschimbata.
+const DOWNLOAD_RETRY_DELAYS_MS = [1500, 3000];
+
+async function fetchWithRetry429(axiosConfig, sourceLabel) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await axios(axiosConfig);
+        } catch (err) {
+            const is429 = err.response?.status === 429;
+            if (!is429 || attempt >= DOWNLOAD_RETRY_DELAYS_MS.length) throw err;
+            const delay = DOWNLOAD_RETRY_DELAYS_MS[attempt];
+            console.warn(`[${sourceLabel}] 429 la descarcare, reincerc peste ${delay}ms (incercarea ${attempt + 2}/${DOWNLOAD_RETRY_DELAYS_MS.length + 1}).`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+}
 
 const app = express();
 app.use(cors());
@@ -684,6 +768,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             headers['RL-API']  = RL_API_KEY;
             headers['Cookie']  = sessionCookie;
             headers['Referer'] = 'https://subtitrari.regielive.ro';
+            await waitForRegieliveDownloadSlot();
         } else if (source === 'titrari') {
             headers['Cookie']  = `PHPSESSID=${TITRARI_COOKIE}`;
             headers['Referer'] = 'https://www.titrari.ro';
@@ -692,7 +777,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             headers['X-Subs-Api-Key'] = process.env.SUBSRO_API_KEY || '';
         }
 
-        const response = await axios({
+        const response = await fetchWithRetry429({
             method: 'get',
             url: zipUrl,
             responseType: 'arraybuffer',
@@ -707,7 +792,7 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
                     throw new Error(`Redirect catre domeniu nepermis: ${options.hostname}`);
                 }
             }
-        });
+        }, source);
 
         const buffer = Buffer.from(response.data);
         const archiveType = detectArchiveType(buffer);
