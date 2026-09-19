@@ -8,7 +8,10 @@ const { searchTitrari } = require('./lib/titrari');
 const { searchSubtitrariNoi } = require('./lib/subtitrarinoi');
 const { searchSubsRo } = require('./lib/subsro');
 
-const APP_URL = process.env.APP_URL || 'http://localhost:7000';
+// RENDER_EXTERNAL_URL vine automat de la Render pe orice Web Service — preferat
+// fata de APP_URL (setat manual) ca sa nu trebuiasca actualizat dupa fiecare
+// schimbare de nume/URL al serviciului.
+const APP_URL = process.env.RENDER_EXTERNAL_URL || process.env.APP_URL || 'http://localhost:7000';
 
 function detectFamily(text) {
     return getSourceType(text);

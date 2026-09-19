@@ -46,7 +46,11 @@ try {
 // care pana acum nu avea absolut nicio protectie pe Vercel. Confirmat pe
 // productie (Evil Dead Burn, 19 sept.): 6 din 12 descarcari RegieLive au picat
 // cu "RATE LIMIT atins" cand au fost cerute rapid, una dupa alta.
-const IS_SERVERLESS = !!process.env.UPSTASH_REDIS_REST_URL;
+//
+// Detectam Vercel explicit prin variabila lui de sistem (setata automat, "1"),
+// nu prin prezenta Redis-ului — pe Render vrem Redis activ pt. cache, dar tot
+// procesul persistent de mai jos (coada locala), nu ramura gandita pt. Vercel.
+const IS_SERVERLESS = !!process.env.VERCEL;
 
 // --- Limitator distribuit pentru DESCARCAREA de pe RegieLive ---
 // Nu avem o cifra exacta de la RegieLive pt. descarcari (spre deosebire de
@@ -916,6 +920,7 @@ if (require.main === module) {
     const port = process.env.PORT || 7000;
     app.listen(port, async () => {
         console.log(`Mega Subtitle Addon ruleaza la http://127.0.0.1:${port}/manifest.json`);
+        if (process.env.RENDER_EXTERNAL_URL) require('./keep-alive');
         const s = await cacheDb.stats();
         if (s.available && cacheDb.backend === 'sqlite') {
             console.log(`[CACHE-DB] ${s.searches} cautari, ${s.subtitles} subtitrari, ${s.sizeMB} MB`);
