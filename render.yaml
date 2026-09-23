@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: mega-subtitles-addon
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /manifest.json
+    autoDeployTrigger: commit
+    envVars:
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: SUBSRO_API_KEY
+        sync: false
+      - key: TITRARI_COOKIE
+        sync: false
+      - key: REGIELIVE_API_KEY
+        sync: false
+      - key: ADMIN_KEY
+        generateValue: true

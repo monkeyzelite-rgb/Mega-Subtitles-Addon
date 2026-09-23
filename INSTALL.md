@@ -65,45 +65,49 @@ Valoarea arată ca un șir aleator de litere/cifre (fără `PHPSESSID=` în faț
 
 ---
 
-## Pasul 5 — Deploy pe Render
+## Pasul 5 — Deploy pe Render (Blueprint)
+
+Fork-ul tău conține deja `render.yaml` — Render citește singur din el toate setările de mai jos, nu le mai completezi manual.
 
 1. Intri pe [dashboard.render.com](https://dashboard.render.com), te loghezi/înregistrezi.
-2. **New** → **Web Service**.
+2. **New** → **Blueprint**.
 3. Conectezi contul de GitHub și alegi fork-ul tău al repo-ului.
-4. Completezi:
+4. Render găsește `render.yaml` și îți arată un serviciu gata completat:
 
 | Câmp | Valoare |
 |---|---|
 | Branch | `main` |
-| Root Directory | (gol) |
 | Runtime | Node |
 | Build Command | `npm install` |
 | Start Command | `node server.js` |
 | Instance Type | Free |
 | Region | Frankfurt |
-| Auto-Deploy | Yes |
+| Auto-Deploy | Yes, la fiecare commit |
 | Health Check Path | `/manifest.json` |
 
-Nu apeși încă pe butonul final de creare — mai întâi variabilele de mediu, la pasul următor (sau le adaugi imediat după, din Environment, dacă ai apăsat deja — nu strică, doar declanșează un al doilea deploy).
+Nu apeși încă pe butonul final — mai întâi variabilele de mediu, la pasul următor (îți sunt cerute pe același ecran, imediat sub tabelul de mai sus).
 
 ---
 
 ## Pasul 6 — Variabile de mediu
 
-În aceeași pagină de creare a serviciului (sau, dacă ai creat deja serviciul, în **Environment** din meniul serviciului), adaugi:
+Pe același ecran, Render îți cere valorile pentru variabilele care nu au valoare implicită în cod:
 
 | Variabilă | Valoare | Obligatorie? |
 |---|---|---|
 | `UPSTASH_REDIS_REST_URL` | de la Pasul 2 | Da |
 | `UPSTASH_REDIS_REST_TOKEN` | de la Pasul 2 | Da |
-| `SUBSRO_API_KEY` | de la Pasul 3 | Nu (fără ea, doar sursa Subs.ro e dezactivată) |
-| `TITRARI_COOKIE` | de la Pasul 4 | Nu (fără ea, doar sursa Titrari e dezactivată) |
-| `ADMIN_KEY` | orice șir lung, ales de tine | Recomandat (fără ea, se folosește o valoare implicită din cod, vizibilă public pe GitHub) |
-| `REGIELIVE_API_KEY` | cheia ta personală de la RegieLive, dacă ai solicitat și primit una | Nu (fără ea, se folosește cheia comună, împărțită cu toate fork-urile) |
+| `SUBSRO_API_KEY` | de la Pasul 3 | Nu — lași gol, doar sursa Subs.ro rămâne dezactivată |
+| `TITRARI_COOKIE` | de la Pasul 4 | Nu — lași gol, doar sursa Titrari rămâne dezactivată |
+| `REGIELIVE_API_KEY` | cheia ta personală de la RegieLive, dacă ai solicitat și primit una | Nu — lași gol, se folosește cheia comună, împărțită cu toate fork-urile |
+
+`ADMIN_KEY` nu mai apare în listă — `render.yaml` îi spune lui Render s-o genereze singur, unică pentru serviciul tău, fără să faci nimic.
 
 Nu trebuie să adaugi `PORT` sau `RENDER_EXTERNAL_URL` — Render le dă automat, codul le folosește singur.
 
-Apeși **Create Web Service** (sau **Save, rebuild, and deploy**, dacă serviciul exista deja).
+Apeși **Apply** (sau **Deploy Blueprint**) ca să creezi serviciul.
+
+Dacă preferi fluxul clasic (**New** → **Web Service**, completat manual câmp cu câmp), merge la fel — `render.yaml` e doar un mod mai rapid de a ajunge la aceleași setări, nu o cerință.
 
 ---
 
