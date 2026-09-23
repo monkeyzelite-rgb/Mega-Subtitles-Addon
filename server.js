@@ -303,7 +303,11 @@ const memCache = new BoundedCache({ ttlMs: 24 * 60 * 60 * 1000, maxEntries: 200 
 const activeDownloads = new Map();
 let globalDownloadQueue = Promise.resolve();
 
-const RL_API_KEY = 'API-BAZARR-YTZ-SL';
+// Cheia implicita e comuna (integrare tip Bazarr) — oricine ruleaza un fork
+// foloseste aceeasi, deci concureaza pe acelasi buget de rate-limit la
+// RegieLive. Daca cineva primeste o cheie personala de la RegieLive, o pune
+// in REGIELIVE_API_KEY si devine complet independent de restul fork-urilor.
+const RL_API_KEY = process.env.REGIELIVE_API_KEY || 'API-BAZARR-YTZ-SL';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rosubs-admin-2026';
 const TITRARI_COOKIE = process.env.TITRARI_COOKIE || '';
 
