@@ -53,7 +53,7 @@ Dacă nu ai încă cheia, poți sări acest pas — addon-ul pornește și făr�
 
 ## Pasul 4 — Cookie-ul de sesiune de la Titrari.ro
 
-Titrari.ro cere o sesiune de login activă pentru căutări.
+Căutarea pe Titrari.ro e complet publică — addon-ul vede și afișează rezultatele lor fără nicio autentificare, la fel ca un vizitator obișnuit. Cookie-ul e nevoie doar la pasul următor, **descărcarea** efectivă a unei subtitrări alese, pas pe care Titrari.ro îl condiționează de un cont logat.
 
 1. Te loghezi normal, într-un browser, cu **propriul tău cont** de pe titrari.ro (nu împrumuta contul altcuiva).
 2. Deschizi DevTools (F12) → **Application** (Chrome) sau **Storage** (Firefox) → **Cookies** → cauți `PHPSESSID` pentru titrari.ro.
@@ -61,7 +61,7 @@ Titrari.ro cere o sesiune de login activă pentru căutări.
 
 Valoarea arată ca un șir aleator de litere/cifre (fără `PHPSESSID=` în față, fără spații) — merge la `TITRARI_COOKIE`, Pasul 6.
 
-**Atenție:** sesiunea asta poate expira după o vreme de inactivitate. Dacă la un moment dat căutările pe Titrari nu mai dau rezultate, cel mai probabil trebuie refăcut acest pas.
+**Atenție:** sesiunea asta poate expira după o vreme de inactivitate. Cum căutarea rămâne publică indiferent de cookie, subtitrările de pe Titrari tot vor *apărea* în listă chiar și cu sesiunea expirată — semnul real că a expirat e că alegerea uneia dintre ele la descărcare eșuează sau vine goală. Dacă vezi asta, cel mai probabil trebuie refăcut acest pas: te re-loghezi pe titrari.ro și iei un `PHPSESSID` nou.
 
 ---
 
