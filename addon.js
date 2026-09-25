@@ -244,9 +244,12 @@ builder.defineSubtitlesHandler(async function(args) {
             if (args.type === 'series' && /^fara info/.test(breakdown.seEpisode || '')) {
                 // Titlu = doar numele serialului (+ an), ca "Supernatural (2005)" de pe
                 // Subtitrari-noi — nu e un format, pur si simplu nu are informatia.
-                const rest = String(sub.title || '').toLowerCase()
-                    .split(String(titleName || '\u0000').toLowerCase()).join(' ')
-                    .replace(/\(?(19|20)\d{2}\)?/g, ' ').replace(/[^a-z0-9]+/g, '');
+                // Punctuatia e scoasa din ambele parti inainte de comparatie: numele
+                // din Cinemeta "The Walking Dead: Dead City" apare pe site ca
+                // "The Walking Dead  Dead City  2023".
+                const words = (x) => ` ${String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+                const rest = (titleName ? words(sub.title).split(words(titleName)).join(' ') : words(sub.title))
+                    .replace(/(?<![0-9])(19|20)\d{2}(?![0-9])/g, ' ').replace(/[^a-z0-9]+/g, '');
                 if (rest.length > 3) unknownFormat.push(`[${name}] ${sub.title}`);
             }
             const cleanTitle = decodeHtml(sub.title || name);

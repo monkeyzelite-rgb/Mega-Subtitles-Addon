@@ -259,3 +259,21 @@ test('sezon cu cifre romane si "S2 - E5"', () => {
     // cuvinte care incep cu litere "romane" nu sunt atinse
     assert.match(calculateScore('Show Season Xmas Special', '', null, null, 2, 5).breakdown.seEpisode, /^fara info/);
 });
+
+test('sezon: interval de sezoane care nu contine sezonul cerut e exclus', () => {
+    for (const [title, season] of [['Show Sezoanele 1-5', 6], ['Sezoanele 2-15 complete, 305 episoade, pentru WEB-DL, BluRay.', 23], ['Show Seasons 1-3', 4]]) {
+        assert.equal(calculateScore(title, '', null, null, season, 1).breakdown.wrongSeason, true, title);
+    }
+    // sezonul din interval ramane pachet multi-sezon, nu exclus
+    assert.equal(calculateScore('Sezoanele 2-15 complete, 305 episoade', '', null, null, 6, 1).breakdown.wrongSeason, undefined);
+    // "Season 2 - 4K" nu e interval
+    assert.equal(calculateScore('Show Season 2 - 4K', '', null, null, 3, 1).breakdown.seEpisode.startsWith('alt sezon'), true);
+});
+
+test('episod: "Episoadele 1-22" exclude E23, dar nu si episoadele din interval', () => {
+    assert.equal(calculateScore('Show Episoadele 1-22', '', null, null, 1, 23).breakdown.wrongEpisode, true);
+    assert.equal(calculateScore('Show Sezonul 3 complet, episoadele 1-22', '', null, null, 3, 23).breakdown.wrongEpisode, true);
+    assert.equal(calculateScore('Show Episoadele 1-22', '', null, null, 1, 5).breakdown.wrongEpisode, undefined);
+    // interval care nu incepe de la 1 = posibil numerotare absoluta, nu excludem
+    assert.equal(calculateScore('Show Episoadele 20-30', '', null, null, 2, 3).breakdown.wrongEpisode, undefined);
+});
