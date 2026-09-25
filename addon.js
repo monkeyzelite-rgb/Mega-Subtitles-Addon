@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { addonBuilder } = require('stremio-addon-sdk');
 const manifest = require('./manifest');
-const { calculateScore, getSourceType, detectFramerate } = require('./lib/scorer');
+const { calculateScore, getSourceType, detectFramerate, hasKeyword } = require('./lib/scorer');
 const { searchRegieLive } = require('./lib/regielive');
 const { searchTitrari } = require('./lib/titrari');
 const { searchSubtitrariNoi } = require('./lib/subtitrarinoi');
@@ -72,9 +72,10 @@ const QUALITY_DISPLAY_LABELS = {
 function detectQualityLabel(text, family) {
     const table = QUALITY_DISPLAY_LABELS[family];
     if (!table) return null;
-    const t = (text || '').toLowerCase();
+    // Aceeasi potrivire pe token ca getSourceType() — cu includes(), un titlu ca
+    // "Confession.2020.WEB" primea eticheta "NF" (din "coNFession").
     for (const [keyword, label] of table) {
-        if (t.includes(keyword)) return label;
+        if (hasKeyword(text, keyword)) return label;
     }
     return null;
 }
@@ -92,7 +93,9 @@ async function getCinemetaInfo(imdbId, type) {
     const axios = require('axios');
     try {
         const baseId = imdbId.split(':')[0];
-        const res = await axios.get(`https://v3-cinemeta.strem.io/meta/${type}/${baseId}.json`);
+        // Fara timeout, un Cinemeta blocat tinea pe loc 3 din cele 4 surse (toate
+        // asteapta meta-ul) — si, prin Promise.allSettled, tot raspunsul catre Stremio.
+        const res = await axios.get(`https://v3-cinemeta.strem.io/meta/${type}/${baseId}.json`, { timeout: 8000 });
         return res.data.meta;
     } catch (err) {
         console.error('[CINEMETA] Eroare:', err.message);
@@ -215,8 +218,9 @@ builder.defineSubtitlesHandler(async function(args) {
             const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode, videoFamilyIsGuess);
             // Titlul mentioneaza explicit un ALT sezon decat cel cerut — nu e risc de
             // sincronizare, e continut garantat gresit. Eliminam complet, nu doar
-            // penalizam (vezi lib/scorer.js unde se seteaza acest flag).
-            if (breakdown.wrongSeason) continue;
+            // penalizam (vezi lib/scorer.js unde se seteaza acest flag). La fel
+            // pentru un episod explicit diferit din acelasi sezon (wrongEpisode).
+            if (breakdown.wrongSeason || breakdown.wrongEpisode) continue;
             const cleanTitle = decodeHtml(sub.title || name);
             const qualityLabel = detectQualityLabel(sub.title, subFamily) || sourceLabel(name);
 
@@ -290,10 +294,12 @@ builder.defineSubtitlesHandler(async function(args) {
     // "hdtv" ramane in lista (rip-urile TV au de obicei acelasi timing ca WEB-DL),
     // dar niciodata aleasa automat peste o varianta disc/web — o impingem mereu la
     // finalul listei, indiferent de scor. In interiorul fiecarui grup, sortam tot
-    // dupa scor ca inainte.
+    // dupa scor ca inainte. EXCEPTIE: cand chiar video-ul e HDTV, subtitrarea HDTV
+    // e potrivirea exacta — inainte era impinsa si atunci sub variante WEB/disc.
+    const demoteHdtv = videoFamily !== 'hdtv';
     finalList.sort((a, b) => {
-        const aHdtv = a.subFamily === 'hdtv';
-        const bHdtv = b.subFamily === 'hdtv';
+        const aHdtv = demoteHdtv && a.subFamily === 'hdtv';
+        const bHdtv = demoteHdtv && b.subFamily === 'hdtv';
         if (aHdtv !== bHdtv) return aHdtv ? 1 : -1;
         return b.score - a.score;
     });
