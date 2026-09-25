@@ -244,3 +244,18 @@ test('review: taietura — cuvinte din titlu, seriale, "Theatrical si Extended"'
     // o subtitrare cu ambele variante se potriveste si cu video fara tag
     assert.equal(calculateScore('Movie 2009 1080p BluRay - contine ambele variante: Theatrical si Extended', 'movie.2009.1080p.bluray.mkv', null).breakdown.cutMismatch, undefined);
 });
+
+test('credite de traducator nu sunt sursa TS/TC/CAM', () => {
+    for (const t of ['Show S01E05 WEB-DL - Sincronizare TS', 'Film 2019 sincro TS', 'Traducere: TC', 'Film 2019 - traducere si sincronizare TS 720p']) assert.notEqual(getSourceType(t), 'low', t);
+    for (const t of ['Movie 2023 TS x264', 'Film adaptata pentru TS', 'Movie 2023 HDTS']) assert.equal(getSourceType(t), 'low', t);
+});
+
+test('sezon cu cifre romane si "S2 - E5"', () => {
+    assert.match(calculateScore('Show Sezonul II WEB-DL', '', null, null, 2, 5).breakdown.seEpisode, /^S02\(\+40\)/);
+    assert.equal(calculateScore('Show Sezonul II WEB-DL', '', null, null, 3, 5).breakdown.wrongSeason, true);
+    assert.match(calculateScore('Show Sezoanele I-III', '', null, null, 2, 5).breakdown.seEpisode, /pachet multi-sezon/);
+    assert.match(calculateScore('Show S2 - E5 WEB-DL', '', null, null, 2, 5).breakdown.seEpisode, /^S02E05\(\+80\)/);
+    assert.equal(calculateScore('Show S2 - E6 WEB-DL', '', null, null, 2, 5).breakdown.wrongEpisode, true);
+    // cuvinte care incep cu litere "romane" nu sunt atinse
+    assert.match(calculateScore('Show Season Xmas Special', '', null, null, 2, 5).breakdown.seEpisode, /^fara info/);
+});

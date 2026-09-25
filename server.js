@@ -1002,7 +1002,9 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
 // Vercel fiecare invocare e scurta si separata, iar backend-ul Redis oricum
 // expira singur intrarile prin TTL nativ (cleanup() e no-op acolo).
 if (!IS_SERVERLESS) {
-    setInterval(() => cacheDb.cleanup(), 24 * 60 * 60 * 1000);
+    // unref: serverul HTTP tine oricum procesul pornit; asa testele (care
+    // incarca server.js fara sa-l porneasca) se pot incheia singure.
+    setInterval(() => cacheDb.cleanup(), 24 * 60 * 60 * 1000).unref();
 }
 
 // Pe Vercel, server.js e doar cerut ca modul (Vercel gestioneaza singur

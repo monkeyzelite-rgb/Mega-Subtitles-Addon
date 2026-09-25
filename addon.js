@@ -157,7 +157,7 @@ builder.defineSubtitlesHandler(async function(args) {
     const getMetaOnce = () => metaPromise || (metaPromise = getCinemetaInfo(args.id, args.type));
 
     const [rlResult, titrariResult, subnoiResult, subsroResult] = await Promise.allSettled([
-        searchRegieLive(args.id, args.type, videoFilename),
+        searchRegieLive(args.id, args.type, videoFilename, getMetaOnce),
         (async () => { const m = await getMetaOnce(); return searchTitrari(args.id, args.type, m); })(),
         (async () => { const m = await getMetaOnce(); return searchSubtitrariNoi(args.id, args.type, m); })(),
         (async () => { const m = await getMetaOnce(); return searchSubsRo(args.id, args.type, m); })(),
@@ -171,6 +171,10 @@ builder.defineSubtitlesHandler(async function(args) {
     ];
 
     const allScored = [];
+    // Titluri de serial in care scorer-ul n-a gasit niciun sezon/episod — un
+    // singur log per cerere, ca formatele noi de pe site-uri sa poata fi
+    // stranse din log-urile Render (cauta "[FORMAT-NECUNOSCUT]").
+    const unknownFormat = [];
 
     // Anul/titlul din Cinemeta (sigure) — pt. bonusul de an si pt. excluderea
     // filmelor cu acelasi nume din alt an (vezi ctx in lib/scorer.js).
@@ -237,6 +241,14 @@ builder.defineSubtitlesHandler(async function(args) {
                 console.log(`[FILTRU] Exclus [${name}] "${sub.title}" — ${breakdown.wrongYear || breakdown.wrongType}`);
                 continue;
             }
+            if (args.type === 'series' && /^fara info/.test(breakdown.seEpisode || '')) {
+                // Titlu = doar numele serialului (+ an), ca "Supernatural (2005)" de pe
+                // Subtitrari-noi — nu e un format, pur si simplu nu are informatia.
+                const rest = String(sub.title || '').toLowerCase()
+                    .split(String(titleName || '\u0000').toLowerCase()).join(' ')
+                    .replace(/\(?(19|20)\d{2}\)?/g, ' ').replace(/[^a-z0-9]+/g, '');
+                if (rest.length > 3) unknownFormat.push(`[${name}] ${sub.title}`);
+            }
             const cleanTitle = decodeHtml(sub.title || name);
             const qualityLabel = detectQualityLabel(sub.title, subFamily) || sourceLabel(name);
 
@@ -267,6 +279,10 @@ builder.defineSubtitlesHandler(async function(args) {
                 _source: name
             });
         }
+    }
+
+    if (unknownFormat.length > 0) {
+        console.log(`[FORMAT-NECUNOSCUT] ${args.id} — ${unknownFormat.length} titluri fara sezon/episod recunoscut: ${unknownFormat.slice(0, 15).map(t => `"${t}"`).join(' ; ')}`);
     }
 
     // Taietura gresita (EXTENDED/Director's Cut vs video fara tag, sau invers)
