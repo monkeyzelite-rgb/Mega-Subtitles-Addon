@@ -4,7 +4,8 @@
   "description": "Stremio addon pentru subtitrari romanesti - RegieLive, Titrari.ro, Subtitrari-noi.ro, Subs.ro",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -10,6 +10,7 @@ const AdmZip = require('adm-zip');
 const iconv = require('iconv-lite');
 const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
+const { getSourceType, detectFramerate } = require('./lib/scorer');
 const cacheDb = require('./lib/cacheStore');
 const BoundedCache = require('./lib/boundedCache');
 
@@ -156,7 +157,10 @@ function srtToVtt(srtText) {
     // cue-uri WebVTT malformate. Player-ele permisive (mpv/ExoPlayer) ignora
     // asta, dar playerul nativ iOS (AVPlayer) respinge fisierul ca invalid —
     // confirmat direct: exact acelasi bug era prezent si in addonul vechi.
-    text = text.replace(/^\d+\n/gm, '');
+    // Stergem DOAR liniile numerice urmate de o linie de timp (indexul real) —
+    // varianta veche (/^\d+\n/gm) stergea si replicile formate doar din cifre
+    // ("3", "2", "1" la o numaratoare, "1984"), lasand cue-uri goale.
+    text = text.replace(/^[ \t]*\d+[ \t]*\n(?=[ \t]*\d{1,2}:\d{2}:\d{2}[,.]\d{3}[ \t]*-->)/gm, '');
     // Ora poate avea 1 SAU 2 cifre in SRT-urile scrise manual (ex. "0:45:47,000"
     // in loc de "00:45:47,000") — regex-ul vechi cerea strict 2 cifre la ora, deci
     // rata exact acest caz, lasand in urma o virgula si o ora pe o cifra, ambele
@@ -270,6 +274,21 @@ function microDvdToSrt(microDvdText, fps = MICRODVD_DEFAULT_FPS) {
     const lines = String(microDvdText).replace(/\r\n/g, '\n').split('\n');
     const cues = [];
 
+    // Multe fisiere MicroDVD incep cu un header de fps: "{1}{1}25.000" (cadrul
+    // 0/1, textul e doar un numar). Ignorat, devenea o replica vizibila "25.000"
+    // si — mai grav — timpii erau calculati cu fps-ul implicit in loc de cel
+    // declarat (23.976 vs 25 = ~4% decalaj, ~4 minute la finalul unui film).
+    const firstCue = lines.map(l => l.replace(/^\uFEFF/, '').trim()).find(l => /^\{\d+\}\{\d+\}/.test(l));
+    const header = firstCue && firstCue.match(/^\{([01])\}\{([01])\}\s*(\d{2,3}(?:[.,]\d+)?)\s*$/);
+    let headerLine = null;
+    if (header) {
+        const declared = parseFloat(header[3].replace(',', '.'));
+        if (declared >= 10 && declared <= 120) {
+            fps = declared;
+            headerLine = firstCue;
+        }
+    }
+
     const frameToSrtTime = (frame) => {
         let ms = Math.round((frame / fps) * 1000);
         const h = Math.floor(ms / 3600000); ms -= h * 3600000;
@@ -279,6 +298,7 @@ function microDvdToSrt(microDvdText, fps = MICRODVD_DEFAULT_FPS) {
     };
 
     for (const line of lines) {
+        if (headerLine && line.replace(/^\uFEFF/, '').trim() === headerLine) { headerLine = null; continue; }
         const m = line.match(/^\{(\d+)\}\{(\d+)\}(.*)$/);
         if (!m) continue;
         const [, startFrame, endFrame, rawText] = m;
@@ -378,19 +398,10 @@ function isAllowedDownloadHost(hostname, source) {
     return allowedDomains.some(domain => h === domain || h.endsWith(`.${domain}`));
 }
 
-const DISC_KEYWORDS = ['remux', 'bluray', 'blu-ray', 'bdrip', 'brrip', 'bd', 'uhd', 'hddvd'];
-const WEB_KEYWORDS  = ['web-dl', 'webdl', 'webrip', 'web', 'amzn', 'nf', 'hmax', 'dsnp'];
-const HDTV_KEYWORDS = ['hdtv', 'pdtv', 'tvrip'];
-const LOW_KEYWORDS  = ['dvdrip', 'dvdscr', 'hdrip', 'cam', 'hdcam', 'hd-ts', 'hdts', 'telesync', 'telecine', 'r5'];
-
-function getFileSourceType(text) {
-    const t = (text || '').toLowerCase();
-    if (LOW_KEYWORDS.some(s => t.includes(s)))  return 'low';
-    if (DISC_KEYWORDS.some(s => t.includes(s))) return 'disc';
-    if (HDTV_KEYWORDS.some(s => t.includes(s))) return 'hdtv';
-    if (WEB_KEYWORDS.some(s => t.includes(s)))  return 'web';
-    return null;
-}
+// Aceeasi clasificare (pe token) ca in lib/scorer.js — copia veche de aici
+// potrivea substring-uri ("cam" in "Cameron", "bd" in "Abduction", "nf" in
+// "Infinity"), deci un fisier din arhiva putea primi -80 pe o sursa inventata.
+const getFileSourceType = getSourceType;
 
 // Confirmat pe productie (Ghosts of Mars, arhiva titrari id=96539): unele
 // arhive de pe aceste site-uri (in principiu exclusiv romanesti) contin de
@@ -472,9 +483,16 @@ function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) 
 // acceptam un numar simplu, fara niciun context ("05" izolat) — prea ambiguu
 // (poate fi rezolutie, an, orice altceva).
 function entryMatchesEpisode(entry, season, episode) {
-    return new RegExp(`s0?${season}e0?${episode}(?!\\d)`, 'i').test(entry) ||
-           new RegExp(`\\b0?${season}x0?${episode}(?!\\d)`, 'i').test(entry) ||
-           new RegExp(`\\bep?(?:isod(?:e|ul)?)?[\\s._-]*0?${episode}(?!\\d)`, 'i').test(entry);
+    if (new RegExp(`s0?${season}e0?${episode}(?!\\d)`, 'i').test(entry) ||
+        new RegExp(`\\b0?${season}x0?${episode}(?!\\d)`, 'i').test(entry)) return true;
+    // Marcajul de episod "de sine statator" (E05/Episode 5) nu spune nimic despre
+    // sezon — intr-o arhiva cu mai multe sezoane ("Season 2/Episode 5.srt" langa
+    // "Season 1/Episode 5.srt") il acceptam doar daca intrarea nu numeste
+    // explicit ALT sezon, altfel alegerea intre ele devenea aleatorie (marime).
+    if (!new RegExp(`\\bep?(?:isod(?:e|ul)?)?[\\s._-]*0?${episode}(?!\\d)`, 'i').test(entry)) return false;
+    const otherSeason = [...entry.matchAll(/(?<![a-z0-9])(?:s|season[\s._-]*|sezonul[\s._-]*)(\d{1,2})(?!\d)/gi)]
+        .some(m => parseInt(m[1], 10) !== parseInt(season, 10));
+    return !otherSeason;
 }
 
 // Un pachet "serie completa" e adesea o arhiva exterioara ce contine cate o
@@ -508,7 +526,7 @@ function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpiso
 
     if (candidates.length === 1) return candidates[0];
 
-    const scored = candidates.map(c => ({
+    let scored = candidates.map(c => ({
         entry: c,
         matchScore: scoreArchiveEntry(c.name, videoFilename, knownSeason, knownEpisode),
         matchesEpisode: (knownSeason && knownEpisode)
@@ -526,6 +544,18 @@ function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpiso
         const wanted = `S${String(knownSeason).padStart(2, '0')}E${String(knownEpisode).padStart(2, '0')}`;
         console.error(`[ARHIVA] ${candidates.length} fisiere, dar niciunul nu poate fi identificat ca ${wanted} — refuz sa aleg dupa marime: ${candidates.map(c => c.name).join(', ')}`);
         return null;
+    }
+
+    // Cand stim episodul si macar un fisier ii corespunde, alegem DOAR dintre
+    // acestea. Altfel, un alt episod cu sursa/rezolutie/grup identice cu
+    // video-ul (+100 +40 +80) batea episodul corect dintr-o sursa diferita
+    // (+120 -80) — extragand silentios episodul gresit din pachet.
+    if (knownSeason && knownEpisode) {
+        const episodeMatches = scored.filter(s => s.matchesEpisode);
+        if (episodeMatches.length < scored.length) {
+            console.log(`[ARHIVA] Pastrez ${episodeMatches.length}/${scored.length} fisiere care corespund episodului cerut.`);
+            scored = episodeMatches;
+        }
     }
 
     scored.sort((a, b) => {
@@ -730,7 +760,13 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         return res.status(404).send('Subtitrare indisponibila.');
     }
 
-    const cacheKey = `${zipUrl}::${videoFilename}`;
+    // Sezonul/episodul fac parte din cheie: acelasi pachet de sezon (acelasi URL)
+    // e servit pt. fiecare episod, iar fara filename (des pe iOS) sau cu unul
+    // opac, cheia veche era IDENTICA pt. toate episoadele — primul episod extras
+    // din pachet era apoi servit din cache (90 de zile) pentru toate celelalte.
+    // Filmele (fara sezon/episod) pastreaza exact cheia veche.
+    const seKey = (knownSeason && knownEpisode) ? `::S${knownSeason}E${knownEpisode}` : '';
+    const cacheKey = `${zipUrl}::${videoFilename}${seKey}`;
 
     const sendSubtitleResponse = (text, responseObj) => {
         const fixedText = fixRomanianDiacritics(text);
@@ -864,7 +900,9 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
 
         const decoded = iconv.decode(rawData, encoding);
         if (isRawAss) return assToSrt(decoded);
-        if (isRawMicroDvd) return microDvdToSrt(decoded);
+        // Fara header de fps in fisier, cadrele se interpreteaza la fps-ul
+        // video-ului (exact ce fac si playerele, ex. VLC), daca il stim din nume.
+        if (isRawMicroDvd) return microDvdToSrt(decoded, detectFramerate(videoFilename) || MICRODVD_DEFAULT_FPS);
         return decoded;
     };
 
