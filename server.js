@@ -337,6 +337,27 @@ if (!ADMIN_KEY) console.warn('[ADMIN] ADMIN_KEY nesetata — rutele /admin sunt 
 const isAdmin = (req) => !!ADMIN_KEY && req.query.key === ADMIN_KEY;
 const TITRARI_COOKIE = process.env.TITRARI_COOKIE || '';
 
+// Ghiceste dispozitivul din User-Agent, ca sa vedem in loguri care client
+// (Nuvio Desktop, Google TV, iPhone...) trimite sau nu filename-ul.
+function guessDevice(ua) {
+    const u = (ua || '').toLowerCase();
+    if (!u) return 'necunoscut';
+    if (/iphone|ipad|ipod|\bios\b|cfnetwork|darwin/.test(u)) return 'iPhone/iOS';
+    if (/google ?tv|android ?tv|\bbravia\b|\baft|\bshield\b|\btv\b/.test(u)) return 'TV';
+    if (/android|okhttp|dalvik/.test(u)) return 'Android';
+    if (/electron|windows|macintosh|mac os x|x11|linux/.test(u)) return 'Desktop';
+    return 'necunoscut';
+}
+
+app.use((req, res, next) => {
+    if (req.path.startsWith('/subtitles/')) {
+        const ua = req.headers['user-agent'] || '';
+        const hasFilename = req.path.includes('filename=');
+        console.log(`[CLIENT] ${guessDevice(ua)} | filename: ${hasFilename ? 'da' : 'NU'} | UA: ${ua.slice(0, 200) || '(gol)'}`);
+    }
+    next();
+});
+
 app.use(getRouter(addonInterface));
 
 app.get('/admin/clear-cache', async (req, res) => {
