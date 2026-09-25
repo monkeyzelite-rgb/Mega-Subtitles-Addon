@@ -101,7 +101,7 @@ Pe același ecran, Render îți cere valorile pentru variabilele care nu au valo
 | `TITRARI_COOKIE` | de la Pasul 4 | Nu — lași gol, doar sursa Titrari rămâne dezactivată |
 | `REGIELIVE_API_KEY` | cheia ta personală de la RegieLive, dacă ai solicitat și primit una | Nu — lași gol, se folosește cheia comună, împărțită cu toate fork-urile |
 
-`ADMIN_KEY` nu mai apare în listă — `render.yaml` îi spune lui Render s-o genereze singur, unică pentru serviciul tău, fără să faci nimic.
+`ADMIN_KEY` nu mai apare în listă — `render.yaml` îi spune lui Render s-o genereze singur, unică pentru serviciul tău, fără să faci nimic. O vezi oricând în Render → serviciul tău → **Environment** → `ADMIN_KEY` (butonul de afișare). Codul nu mai are o cheie implicită: dacă variabila lipsește (de ex. serviciu creat manual, nu din Blueprint), rutele `/admin/...` sunt pur și simplu dezactivate — o adaugi manual în Environment cu orice valoare lungă, aleatorie.
 
 Nu trebuie să adaugi `PORT` sau `RENDER_EXTERNAL_URL` — Render le dă automat, codul le folosește singur.
 

@@ -151,11 +151,10 @@ builder.defineSubtitlesHandler(async function(args) {
         console.log(`[FPS] Framerate detectat: ${videoFps}`);
     }
 
-    let meta = null;
-    const getMetaOnce = async () => {
-        if (!meta) meta = await getCinemetaInfo(args.id, args.type);
-        return meta;
-    };
+    // Promisiunea (nu rezultatul) e memorata: cele 3 surse o cer in paralel, iar
+    // varianta veche (if (!meta) ...) pornea cate o cerere Cinemeta pt. fiecare.
+    let metaPromise = null;
+    const getMetaOnce = () => metaPromise || (metaPromise = getCinemetaInfo(args.id, args.type));
 
     const [rlResult, titrariResult, subnoiResult, subsroResult] = await Promise.allSettled([
         searchRegieLive(args.id, args.type, videoFilename),
@@ -172,6 +171,12 @@ builder.defineSubtitlesHandler(async function(args) {
     ];
 
     const allScored = [];
+
+    // Anul/titlul din Cinemeta (sigure) — pt. bonusul de an si pt. excluderea
+    // filmelor cu acelasi nume din alt an (vezi ctx in lib/scorer.js).
+    const meta = await getMetaOnce();
+    const knownYear = meta ? (parseInt(String(meta.year || meta.releaseInfo || '').substring(0, 4), 10) || null) : null;
+    const titleName = meta ? meta.name : null;
 
     for (const { result, name } of sources) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value)) {
@@ -215,12 +220,23 @@ builder.defineSubtitlesHandler(async function(args) {
             // are ce cauta nici macar ca fallback manual in lista din Stremio.
             if (subFamily === 'low') continue;
 
-            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode, videoFamilyIsGuess);
+            const { score, breakdown } = calculateScore(sub.title, videoFilenameLower, signal, videoFamily, knownSeason, knownEpisode, videoFamilyIsGuess, {
+                contentType: args.type,
+                knownYear,
+                titleName,
+                // doar sursele care cauta dupa TEXT pot intoarce alt film cu acelasi nume
+                checkYear: name === 'regielive' || name === 'subtitrarinoi'
+            });
             // Titlul mentioneaza explicit un ALT sezon decat cel cerut — nu e risc de
             // sincronizare, e continut garantat gresit. Eliminam complet, nu doar
             // penalizam (vezi lib/scorer.js unde se seteaza acest flag). La fel
             // pentru un episod explicit diferit din acelasi sezon (wrongEpisode).
             if (breakdown.wrongSeason || breakdown.wrongEpisode) continue;
+            // Film cu acelasi nume din alt an / episod de serial la cererea unui film.
+            if (breakdown.wrongYear || breakdown.wrongType) {
+                console.log(`[FILTRU] Exclus [${name}] "${sub.title}" — ${breakdown.wrongYear || breakdown.wrongType}`);
+                continue;
+            }
             const cleanTitle = decodeHtml(sub.title || name);
             const qualityLabel = detectQualityLabel(sub.title, subFamily) || sourceLabel(name);
 
@@ -253,7 +269,12 @@ builder.defineSubtitlesHandler(async function(args) {
         }
     }
 
-    allScored.sort((a, b) => b.score - a.score);
+    // Taietura gresita (EXTENDED/Director's Cut vs video fara tag, sau invers)
+    // merge dupa toate variantele cu taietura corecta, indiferent de scor — vezi
+    // breakdown.cutMismatch in lib/scorer.js. Sortam asa inca de aici, ca limitele
+    // de mai jos (primele 8 etc.) sa pastreze intai variantele corecte.
+    const cutTier = (s) => (s.breakdown.cutMismatch ? 1 : 0);
+    allScored.sort((a, b) => cutTier(a) - cutTier(b) || b.score - a.score);
 
     const seenUrls = new Set();
     const deduped = allScored.filter(sub => {
@@ -297,12 +318,11 @@ builder.defineSubtitlesHandler(async function(args) {
     // dupa scor ca inainte. EXCEPTIE: cand chiar video-ul e HDTV, subtitrarea HDTV
     // e potrivirea exacta — inainte era impinsa si atunci sub variante WEB/disc.
     const demoteHdtv = videoFamily !== 'hdtv';
-    finalList.sort((a, b) => {
-        const aHdtv = demoteHdtv && a.subFamily === 'hdtv';
-        const bHdtv = demoteHdtv && b.subFamily === 'hdtv';
-        if (aHdtv !== bHdtv) return aHdtv ? 1 : -1;
-        return b.score - a.score;
-    });
+    // Ordinea finala: corecte < HDTV < taietura gresita (desincronizare sigura
+    // dupa prima scena diferita, mai grav decat un rip TV) — in fiecare grup,
+    // dupa scor.
+    const tier = (s) => cutTier(s) * 2 + (demoteHdtv && s.subFamily === 'hdtv' ? 1 : 0);
+    finalList.sort((a, b) => tier(a) - tier(b) || b.score - a.score);
 
     console.log(`\n[SCOR] Clasament final pentru "${videoFilename || '(fara filename)'}"`);
     finalList.forEach((sub, i) => {
@@ -316,6 +336,8 @@ builder.defineSubtitlesHandler(async function(args) {
         if (b.resMatch)     parts.push(b.resMatch);
         if (b.codec)        parts.push(b.codec);
         if (b.softMatch)    parts.push(b.softMatch);
+        if (b.version)      parts.push(b.version);
+        if (b.cutMismatch)  parts.push('ALTA TAIETURA — la final');
         if (b.signal)       parts.push(b.signal);
         const marker = i === 0 ? '  <-- ALEASA AUTOMAT' : '';
         console.log(`  #${i + 1} [${sub._source}] [scor ${sub.score.toFixed(1)}] [${sub.subFamily || '?'}] "${sub.title}" — ${parts.join(', ') || 'fara potriviri'}${marker}`);

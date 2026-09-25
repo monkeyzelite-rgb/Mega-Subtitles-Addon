@@ -10,7 +10,7 @@ const AdmZip = require('adm-zip');
 const iconv = require('iconv-lite');
 const jschardet = require('jschardet');
 const { clearSearchCache } = require('./lib/regielive');
-const { getSourceType, detectFramerate } = require('./lib/scorer');
+const { getSourceType, detectFramerate, parseEpisodeRefs, parseSeasonRanges } = require('./lib/scorer');
 const cacheDb = require('./lib/cacheStore');
 const BoundedCache = require('./lib/boundedCache');
 
@@ -328,13 +328,19 @@ let globalDownloadQueue = Promise.resolve();
 // RegieLive. Daca cineva primeste o cheie personala de la RegieLive, o pune
 // in REGIELIVE_API_KEY si devine complet independent de restul fork-urilor.
 const RL_API_KEY = process.env.REGIELIVE_API_KEY || 'API-BAZARR-YTZ-SL';
-const ADMIN_KEY = process.env.ADMIN_KEY || 'rosubs-admin-2026';
+// Fara valoare implicita in cod: o cheie scrisa aici e publica pe GitHub, deci
+// oricine ar putea goli cache-ul (pe Redis, /admin/clear-cache face flushdb =
+// TOATA baza) oricarui deploy care nu si-a setat ADMIN_KEY. Nesetata = rutele
+// /admin sunt dezactivate. Pe Render, render.yaml o genereaza automat.
+const ADMIN_KEY = process.env.ADMIN_KEY || null;
+if (!ADMIN_KEY) console.warn('[ADMIN] ADMIN_KEY nesetata — rutele /admin sunt dezactivate.');
+const isAdmin = (req) => !!ADMIN_KEY && req.query.key === ADMIN_KEY;
 const TITRARI_COOKIE = process.env.TITRARI_COOKIE || '';
 
 app.use(getRouter(addonInterface));
 
 app.get('/admin/clear-cache', async (req, res) => {
-    if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
+    if (!isAdmin(req)) return res.status(403).send('Cheie invalida.');
     const memCleared = memCache.size;
     memCache.clear();
     activeDownloads.clear();
@@ -344,7 +350,7 @@ app.get('/admin/clear-cache', async (req, res) => {
 });
 
 app.get('/admin/cache-stats', async (req, res) => {
-    if (req.query.key !== ADMIN_KEY) return res.status(403).send('Cheie invalida.');
+    if (!isAdmin(req)) return res.status(403).send('Cheie invalida.');
     const s = await cacheDb.stats();
     res.json({
         memorie: memCache.size,
@@ -482,17 +488,51 @@ function scoreArchiveEntry(entryName, videoFilename, knownSeason, knownEpisode) 
 // "01x05", sau "e05"/"ep05"/"episod(ul) 05" ca marcaj de sine statator. NU
 // acceptam un numar simplu, fara niciun context ("05" izolat) — prea ambiguu
 // (poate fi rezolutie, an, orice altceva).
+// Mentiune explicita de sezon intr-o cale din arhiva: "s02", "Season 2", "Sezonul 2".
+// "-S14" lipit de cratima la finalul numelui e un grup de release ("...H264-S14"),
+// nu sezonul 14 — il acceptam ca sezon dupa cratima doar daca urmeaza "/" sau E##.
+const SEASON_MENTION_RE = /(?<![a-z0-9-])s(\d{1,2})(?!\d)|(?<=-)s(\d{1,2})(?=\/|e\d)|(?<![a-z0-9])(?:season|sezon(?:ul)?)[\s._-]*(\d{1,2})(?!\d)/gi;
+const seasonMentions = (entry) => [...entry.matchAll(SEASON_MENTION_RE)].map(m => parseInt(m[1] || m[2] || m[3], 10));
+
+// Referintele la episod ale unei intrari: intai din numele fisierului, apoi (daca
+// fisierul nu spune nimic) din toata calea — "Sezonul 2/Episodul 05.srt". Numele
+// fisierului are prioritate ca un folder-pachet ("Show.S01E01-E10/...") sa nu
+// faca orice fisier din el sa para episodul cerut.
+function entryEpisodeRefs(entry) {
+    const base = entry.split('/').pop();
+    const baseRefs = parseEpisodeRefs(base);
+    return baseRefs.length > 0 ? baseRefs : parseEpisodeRefs(entry);
+}
+
 function entryMatchesEpisode(entry, season, episode) {
-    if (new RegExp(`s0?${season}e0?${episode}(?!\\d)`, 'i').test(entry) ||
-        new RegExp(`\\b0?${season}x0?${episode}(?!\\d)`, 'i').test(entry)) return true;
+    const s = parseInt(season, 10), e = parseInt(episode, 10);
+    // Acelasi parser ca in lib/scorer.js — recunoaste S01E05, S1E5, S01.E05,
+    // S01 Ep05, 1x05, "Sezonul 1 Episodul 5", dublu-episod "S01E05E06". Intr-o
+    // arhiva cu TOT serialul (S01E01...S03E10 la gramada) doar fisierul care
+    // numeste exact sezonul+episodul cerut trece de aici.
+    const refs = entryEpisodeRefs(entry);
+    if (refs.length > 0) return refs.some(r => r.season === s && e >= r.from && e <= r.to);
+    const base = entry.split('/').pop();
+    // Forme lipite fara separator ("ShowS01E05"), pe care parserul le ignora.
+    if (new RegExp(`s0?${s}e0?${e}(?!\\d)`, 'i').test(base) ||
+        new RegExp(`\\b0?${s}x0?${e}(?!\\d)`, 'i').test(base)) return true;
     // Marcajul de episod "de sine statator" (E05/Episode 5) nu spune nimic despre
     // sezon — intr-o arhiva cu mai multe sezoane ("Season 2/Episode 5.srt" langa
     // "Season 1/Episode 5.srt") il acceptam doar daca intrarea nu numeste
     // explicit ALT sezon, altfel alegerea intre ele devenea aleatorie (marime).
-    if (!new RegExp(`\\bep?(?:isod(?:e|ul)?)?[\\s._-]*0?${episode}(?!\\d)`, 'i').test(entry)) return false;
-    const otherSeason = [...entry.matchAll(/(?<![a-z0-9])(?:s|season[\s._-]*|sezonul[\s._-]*)(\d{1,2})(?!\d)/gi)]
-        .some(m => parseInt(m[1], 10) !== parseInt(season, 10));
-    return !otherSeason;
+    if (!new RegExp(`\\bep?(?:isod(?:e|ul)?)?[\\s._-]*0?${e}(?!\\d)`, 'i').test(base)) return false;
+    return !seasonMentions(entry).some(n => n !== s);
+}
+
+// Un fisier care numeste EXPLICIT alt episod sau alt sezon decat cel cerut.
+// Un nume fara nicio informatie ("subtitrare.srt") nu contrazice nimic.
+function entryContradictsEpisode(entry, season, episode) {
+    const s = parseInt(season, 10), e = parseInt(episode, 10);
+    const refs = entryEpisodeRefs(entry);
+    if (refs.length > 0) return !refs.some(r => r.season === s && e >= r.from && e <= r.to);
+    const seasons = seasonMentions(entry);
+    if (seasons.length === 0 || seasons.includes(s)) return false;
+    return !parseSeasonRanges(entry).some(r => s >= r.from && s <= r.to);
 }
 
 // Un pachet "serie completa" e adesea o arhiva exterioara ce contine cate o
@@ -524,7 +564,17 @@ function pickBestSubtitleFile(candidates, videoFilename, knownSeason, knownEpiso
         candidates = nonForeign;
     }
 
-    if (candidates.length === 1) return candidates[0];
+    if (candidates.length === 1) {
+        // Inainte, singurul fisier era servit fara nicio verificare — o arhiva
+        // "Show.S02E04.zip" cu un singur .srt ajungea la S02E05 fara eroare.
+        const only = candidates[0];
+        if (knownSeason && knownEpisode && entryContradictsEpisode(only.name, knownSeason, knownEpisode)) {
+            const wanted = `S${String(knownSeason).padStart(2, '0')}E${String(knownEpisode).padStart(2, '0')}`;
+            console.error(`[ARHIVA] Singurul fisier ("${only.name}") e pentru alt episod decat ${wanted} — refuz.`);
+            return null;
+        }
+        return only;
+    }
 
     let scored = candidates.map(c => ({
         entry: c,

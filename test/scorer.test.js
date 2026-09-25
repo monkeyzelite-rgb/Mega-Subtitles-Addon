@@ -157,3 +157,90 @@ test('clasament film: titlul filmului nu mai elimina candidatii', () => {
     const order = rank(titles, video);
     assert.deepEqual(order, ['Ghosts.of.Mars.2001.1080p.BluRay.x264-AMIABLE', 'Ghosts of Mars (2001) - traducere completa']);
 });
+
+test('versiune: taietura diferita e marcata (cutMismatch) si ajunge la final', () => {
+    const plainVideo = 'movie.2009.1080p.bluray.x264-yts.mkv';
+    assert.equal(calculateScore('Movie.2009.EXTENDED.1080p.BluRay', plainVideo, null).breakdown.cutMismatch, true);
+    assert.equal(calculateScore('Movie.2009.1080p.WEB-DL', plainVideo, null).breakdown.cutMismatch, undefined);
+    assert.equal(calculateScore('Movie.2009.Theatrical.1080p', plainVideo, null).breakdown.cutMismatch, undefined);
+    // video EXTENDED: subtitrarea fara tag e varianta de cinema
+    assert.equal(calculateScore('Movie.2009.1080p.BluRay', 'movie.2009.extended.1080p.bluray.mkv', null).breakdown.cutMismatch, true);
+    assert.equal(calculateScore('Movie.2009.Extended.1080p', 'movie.2009.extended.1080p.bluray.mkv', null).breakdown.cutMismatch, undefined);
+    // fara filename: presupunem varianta de cinema
+    assert.equal(calculateScore('Movie 2009 Directors Cut', '', null).breakdown.cutMismatch, true);
+});
+
+test('episod: formate romanesti si variante suplimentare', () => {
+    for (const title of ['Sezon 1 Episod 5', 'Sez. 1 Ep. 5', 'Show S01 Ep05', 'Show S01EP05', 'Episodul 5 din sezonul 1', 'Sezonul 1/Episodul 05']) {
+        assert.match(calculateScore(title, '', null, null, 1, 5).breakdown.seEpisode, /^S01E05\(\+80\)/, title);
+    }
+    assert.equal(calculateScore('Show Sez. 3 Ep. 5', '', null, null, 1, 5).breakdown.wrongSeason, true);
+});
+
+test('an: anul din Cinemeta, inclusiv cu "_" ca separator in filename', () => {
+    assert.equal(calculateScore('Mayday.2026.1080p.WEB-DL', 'mayday_2026_1080p_rhs.mkv', null).breakdown.year, '2026(+30)');
+    assert.equal(calculateScore('Blade Runner 2049 (2017) 1080p', 'blade.runner.2049.2017.1080p.mkv', null).breakdown.year, '2017(+30)');
+    assert.equal(calculateScore('Mayday.2026.WEB', '', null, null, null, null, false, { knownYear: 2026 }).breakdown.year, '2026(+30)');
+});
+
+test('an: film cu acelasi nume din alt an / episod de serial e exclus la sursele cautate dupa text', () => {
+    const ctx = { contentType: 'movie', knownYear: 2026, titleName: 'Mayday', checkYear: true };
+    const video = 'mayday_2026_1080p_rhs.mkv';
+    assert.ok(calculateScore('Mayday 2021 1080p Bluray DTS-HD MA 5 1 X264-EVO', video, null, null, null, null, false, ctx).breakdown.wrongYear);
+    assert.ok(calculateScore('mayday.1x01.720p_hdtv_x264-fov', video, null, null, null, null, false, ctx).breakdown.wrongType);
+    assert.equal(calculateScore('Mayday.2026.1080p.ATVP.WEB-DL', video, null, null, null, null, false, ctx).breakdown.wrongYear, undefined);
+    assert.equal(calculateScore('Mayday.2025.1080p.WEB-DL', video, null, null, null, null, false, ctx).breakdown.wrongYear, undefined); // +-1 an
+    // sursele filtrate pe IMDb (checkYear false) nu sunt afectate
+    assert.equal(calculateScore('Mayday 2021', video, null, null, null, null, false, { ...ctx, checkYear: false }).breakdown.wrongYear, undefined);
+    // un an care face parte din titlul filmului nu e "alt an"
+    const br = { contentType: 'movie', knownYear: 2017, titleName: 'Blade Runner 2049', checkYear: true };
+    assert.equal(calculateScore('Blade.Runner.2049.2017.1080p.BluRay', '', null, null, null, null, false, br).breakdown.wrongYear, undefined);
+    // "4x4" din titlu nu e un episod
+    const fx = { contentType: 'movie', knownYear: 2019, titleName: '4x4', checkYear: true };
+    assert.equal(calculateScore('4x4 2019 1080p WEB-DL', '', null, null, null, null, false, fx).breakdown.wrongType, undefined);
+});
+
+// Cazuri gasite la review (agent): notatii care NU trebuie sa excluda un pachet
+// ce contine episodul, si titluri de episod care nu sunt intervale.
+test('review: intervalele/listele in orice notatie acopera episodul cerut', () => {
+    for (const title of [
+        'The Bear S02E01–E10', 'The Bear S02E01 pana la S02E10', 'The Bear Sezonul 2 episoadele 1 pana la 10',
+        'Season 2 Episodes 1 to 10', 'S02E01 ... E10', 'Show S01E01-S02E10', 'S02E03-E04-E05',
+        'S02E04 & 05', 'S02E04 si 05', 'Sezonul 2 episodul 4/5', 'The.Bear.S02E04.&.05.1080p',
+        'The.Bear.Sezonul.2.episoadele.1.la.10.1080p', 'The.Bear.2x01.-.2x10.1080p',
+    ]) {
+        const season = title.includes('S01E01-S02E10') ? 1 : 2;
+        const { breakdown } = calculateScore(title, '', null, null, season, 5);
+        assert.equal(breakdown.wrongEpisode, undefined, title);
+    }
+});
+
+test('review: titlul episodului nu devine interval, anime absolut nu e exclus', () => {
+    // "S03E07 - 42" (Doctor Who): ambiguu -> nici pachet E07-E42, nici exclus
+    assert.match(calculateScore('Doctor.Who.S03E07 - 42', '', null, null, 3, 7).breakdown.seEpisode, /^S03E07\(\+80\)/);
+    assert.equal(calculateScore('Doctor.Who.S03E07 - 42', '', null, null, 3, 10).breakdown.wrongEpisode, undefined);
+    // "24 S01E01 - 12:00 A.M." e episodul 1, deci exclus pt. E05
+    assert.equal(calculateScore('24.S01E01 - 12:00 A.M.-1:00 A.M.', '', null, null, 1, 5).breakdown.wrongEpisode, true);
+    assert.match(calculateScore('Show.S01E05-10bit', '', null, null, 1, 5).breakdown.seEpisode, /^S01E05\(\+80\)/);
+    assert.equal(calculateScore('One.Piece.S21E1071.1080p.CR.WEB-DL', '', null, null, 21, 180).breakdown.wrongEpisode, undefined);
+    // "traducere completa" nu e un pachet
+    assert.equal(calculateScore('The.Bear.S01E04.1080p.WEB-DL-NTb - traducere completa', '', null, null, 1, 5).breakdown.wrongEpisode, true);
+    // "Season 2 - 4K" nu e intervalul de sezoane 2-4
+    assert.equal(calculateScore('Show Season 2 - 4K HDR WEB-DL', '', null, null, 3, 1).breakdown.wrongSeason, true);
+});
+
+test('review: CAM/TS/TC ca tag real vs proza, codec lipit de sursa', () => {
+    for (const t of ['Oppenheimer 2023 CAM x264-GRP', 'Movie 2023 TS', 'movie.2023.ts.xvid', 'Movie 2004 DVDRipXviD-DiAMOND']) assert.equal(getSourceType(t), 'low', t);
+    for (const t of ['Sincronizare (cam 2 secunde mai devreme)', 'Sincro cam-asa, merge', 'Traducere: Tudor C. (TC)']) assert.equal(getSourceType(t), null, t);
+    assert.equal(getSourceType('Movie.BluRayx264'), 'disc');
+    assert.equal(getSourceType('Show.HDTVx264'), 'hdtv');
+});
+
+test('review: taietura — cuvinte din titlu, seriale, "Theatrical si Extended"', () => {
+    // "Uncut" din titlul "Uncut Gems" nu e editie
+    assert.equal(calculateScore('BluRay 1080p x264-SPARKS', 'uncut.gems.2019.1080p.bluray.x264-sparks.mkv', null, null, null, null, false, { contentType: 'movie', titleName: 'Uncut Gems' }).breakdown.cutMismatch, undefined);
+    // la seriale nu aplicam regula (titlul episodului "Redux")
+    assert.equal(calculateScore('The X-Files S05E01 - Redux 1080p BluRay', 'the.x-files.s05e01.1080p.bluray.mkv', null, null, 5, 1, false, { contentType: 'series' }).breakdown.cutMismatch, undefined);
+    // o subtitrare cu ambele variante se potriveste si cu video fara tag
+    assert.equal(calculateScore('Movie 2009 1080p BluRay - contine ambele variante: Theatrical si Extended', 'movie.2009.1080p.bluray.mkv', null).breakdown.cutMismatch, undefined);
+});
