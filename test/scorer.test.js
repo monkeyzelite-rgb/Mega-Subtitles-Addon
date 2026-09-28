@@ -277,3 +277,25 @@ test('episod: "Episoadele 1-22" exclude E23, dar nu si episoadele din interval',
     // interval care nu incepe de la 1 = posibil numerotare absoluta, nu excludem
     assert.equal(calculateScore('Show Episoadele 20-30', '', null, null, 2, 3).breakdown.wrongEpisode, undefined);
 });
+
+test('sezon: lista de sezoane si forma scurta "S01-05" contin sezonul cerut', () => {
+    assert.equal(calculateScore('Show Sezonul 1 si 2', '', null, null, 2, 3).breakdown.wrongSeason, undefined);
+    assert.equal(calculateScore('Show Season 1 & 2', '', null, null, 2, 3).breakdown.wrongSeason, undefined);
+    assert.equal(calculateScore('Show Sezonul 1 si 2', '', null, null, 4, 3).breakdown.wrongSeason, true);
+    assert.equal(calculateScore('Breaking Bad S01-05 Complete', '', null, null, 3, 1).breakdown.wrongSeason, undefined);
+    assert.equal(calculateScore('Breaking Bad S01-05 Complete', '', null, null, 6, 1).breakdown.wrongSeason, true);
+});
+
+test('grup: tag-ul trackerului si restul numelui dupa un dash nu sunt grupuri', () => {
+    const group = (sub, vid) => calculateScore(sub, vid.toLowerCase(), null, null, null, null).breakdown.matchedGroup;
+    assert.equal(group('Movie.2020.1080p.BluRay.x264-GECKOS[rarbg]', 'Movie.2020.1080p.BluRay.x264-SPARKS[rarbg].mkv'), undefined);
+    assert.equal(group('Movie.2020.1080p.BluRay.x264-SPARKS', 'Movie.2020.1080p.BluRay.x264-SPARKS[rarbg].mkv'), 'sparks(+100)');
+    assert.equal(group('Movie.2020.1080p.WEB-DL.DDP5.1.H.264', 'Movie.2020.1080p.WEB-DL.DDP5.1.H.264.mkv'), undefined);
+});
+
+test('sursa: extensia .ts nu e TeleSync; titlul "It" nu taie "edition"', () => {
+    assert.equal(getSourceType('movie.2020.1080p.ts'), null);
+    assert.equal(getSourceType('movie.2023.ts.xvid'), 'low');
+    const r = calculateScore('It 2017 1080p BluRay x264', 'it.2017.special.edition.1080p.bluray.x264-grp.mkv', null, null, null, null, false, { contentType: 'movie', titleName: 'It' });
+    assert.equal(r.breakdown.cutMismatch, true);
+});
