@@ -106,9 +106,14 @@ async function getCinemetaInfo(imdbId, type) {
 const builder = new addonBuilder(manifest);
 
 builder.defineSubtitlesHandler(async function(args) {
-    const videoFilename = (args.extra && args.extra.filename) ? args.extra.filename : '';
+    // qs.parse face array din "filename=a&filename=b" — .toLowerCase() pe array
+    // arunca si intreaga cerere intorcea 500.
+    const firstValue = (v) => Array.isArray(v) ? v[0] : v;
+    const rawFilename = firstValue(args.extra && args.extra.filename);
+    const videoFilename = typeof rawFilename === 'string' ? rawFilename : '';
     const videoFilenameLower = videoFilename.toLowerCase();
-    const videoSize = args.extra && args.extra.videoSize ? args.extra.videoSize : null;
+    const rawVideoSize = firstValue(args.extra && args.extra.videoSize);
+    const videoSize = rawVideoSize ? rawVideoSize : null;
 
     // Sezon/episod din ID-ul Stremio (tt.../sezon/episod), NU din filename.
     // Filename-ul poate fi un placeholder opac (ex: un hash de la o sursa

@@ -416,11 +416,15 @@ const ALLOWED_DOWNLOAD_DOMAINS = {
     subtitrarinoi: ['subtitrari-noi.ro'],
     subsro:        ['subs.ro'],
 };
+const DOWNLOAD_TIMEOUT_MS = 20000;
 const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB — generos pt. orice arhiva reala de subtitrari
 
 function isAllowedDownloadHost(hostname, source) {
+    // hasOwn, nu lookup simplu: "?source=constructor" (sau __proto__, toString)
+    // intorcea o valoare mostenita din Object.prototype, iar .some() arunca
+    // TypeError intr-un handler async -> unhandled rejection -> procesul cadea.
+    if (typeof source !== 'string' || !Object.prototype.hasOwnProperty.call(ALLOWED_DOWNLOAD_DOMAINS, source)) return false;
     const allowedDomains = ALLOWED_DOWNLOAD_DOMAINS[source];
-    if (!allowedDomains) return false;
     const h = (hostname || '').toLowerCase();
     return allowedDomains.some(domain => h === domain || h.endsWith(`.${domain}`));
 }
@@ -897,6 +901,10 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
             url: zipUrl,
             responseType: 'arraybuffer',
             headers,
+            // Fara timeout, o sursa care accepta conexiunea si nu raspunde bloca
+            // pentru totdeauna globalDownloadQueue (coada seriala) — deci TOATE
+            // descarcarile urmatoare, pana la restart.
+            timeout: DOWNLOAD_TIMEOUT_MS,
             maxRedirects: 5,
             maxContentLength: MAX_DOWNLOAD_SIZE,
             maxBodyLength: MAX_DOWNLOAD_SIZE,
@@ -970,11 +978,15 @@ app.get(['/download', '/download.vtt'], async (req, res) => {
         console.log(`[ENCODING] Detectat: ${detected?.encoding} → folosesc: ${encoding}`);
 
         const decoded = iconv.decode(rawData, encoding);
-        if (isRawAss) return assToSrt(decoded);
+        let text = decoded;
+        if (isRawAss) text = assToSrt(decoded);
         // Fara header de fps in fisier, cadrele se interpreteaza la fps-ul
         // video-ului (exact ce fac si playerele, ex. VLC), daca il stim din nume.
-        if (isRawMicroDvd) return microDvdToSrt(decoded, detectFramerate(videoFilename) || MICRODVD_DEFAULT_FPS);
-        return decoded;
+        else if (isRawMicroDvd) text = microDvdToSrt(decoded, detectFramerate(videoFilename) || MICRODVD_DEFAULT_FPS);
+        // O conversie fara nicio replica ar fi cache-uita 90 de zile si servita
+        // ca un WEBVTT gol cu 200 — playerul n-ar arata nimic si nici n-ar reincerca.
+        if (!text || !text.trim()) throw new Error('SUBTITLE_EMPTY');
+        return text;
     };
 
     const queuedTask = IS_SERVERLESS
