@@ -299,3 +299,16 @@ test('sursa: extensia .ts nu e TeleSync; titlul "It" nu taie "edition"', () => {
     const r = calculateScore('It 2017 1080p BluRay x264', 'it.2017.special.edition.1080p.bluray.x264-grp.mkv', null, null, null, null, false, { contentType: 'movie', titleName: 'It' });
     assert.equal(r.breakdown.cutMismatch, true);
 });
+
+test('pachet multi-sezon de aceeasi sursa ca video-ul bate episodul exact de alta sursa (Supernatural S04E06)', () => {
+    const video = 'Supernatural.S04E06.Yellow.Fever.1080p.BluRay.DD.5.1.x265-edge2020.mkv';
+    assert.deepEqual(rank([
+        'Supernatural.S04E06.1080p.HMAX.WEB-DL.DD5.1.H.264',
+        'Bluray 720p S1 (MACRO), S2 (SINNERS), S3 (ORPHEUS+SINNERS), S4 (CLUE+SINNERS), S5 (CLUE+SINNERS), S6 (WiKi)',
+    ], video, { season: 4, episode: 6 })[0], 'Bluray 720p S1 (MACRO), S2 (SINNERS), S3 (ORPHEUS+SINNERS), S4 (CLUE+SINNERS), S5 (CLUE+SINNERS), S6 (WiKi)');
+    // aceeasi sursa de ambele parti: episodul exact ramane primul
+    assert.equal(rank([
+        'Supernatural.S04E06.720p.BluRay.x264-CLUE',
+        'Bluray 720p S1 (MACRO), S2 (SINNERS), S3 (ORPHEUS+SINNERS), S4 (CLUE+SINNERS), S5 (CLUE+SINNERS), S6 (WiKi)',
+    ], video, { season: 4, episode: 6 })[0], 'Supernatural.S04E06.720p.BluRay.x264-CLUE');
+});
